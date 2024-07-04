@@ -1,24 +1,25 @@
 {
   "summary": {
-    "generatedon": "2024-07-04T12:08:07Z",
+    "generatedon": "2024-07-04T16:06:00Z",
     "parser": "MultiReportParser (2x OpenCoverParser)",
     "assemblies": 1,
-    "classes": 1,
+    "classes": 2,
     "files": 1,
-    "coveredlines": 5,
+    "coveredlines": 38,
     "uncoveredlines": 0,
-    "coverablelines": 5,
-    "totallines": 25,
+    "coverablelines": 38,
+    "totallines": 78,
     "linecoverage": 100,
     "coveredbranches": 0,
     "totalbranches": 0,
-    "coveredmethods": 2,
-    "totalmethods": 2,
+    "coveredmethods": 10,
+    "totalmethods": 10,
     "methodcoverage": 100
  },
   "coverage": {
     "assemblies": [
-      { "name": "Tests", "classes": 1, "coverage": 100, "coveredlines": 5, "coverablelines": 5, "totallines": 25, "branchcoverage": null, "coveredbranches": 0, "totalbranches": 0, "methodcoverage": 100, "coveredmethods": 2, "totalmethods": 2, "classesinassembly": [
-        { "name": "NewTestScript", "coverage": 100, "coveredlines": 5, "coverablelines": 5, "totallines": 25, "branchcoverage": null, "coveredbranches": 0, "totalbranches": 0, "methodcoverage": 100, "coveredmethods": 2, "totalmethods": 2 } ] } ]
+      { "name": "Tests", "classes": 2, "coverage": 100, "coveredlines": 38, "coverablelines": 38, "totallines": 156, "branchcoverage": null, "coveredbranches": 0, "totalbranches": 0, "methodcoverage": 100, "coveredmethods": 10, "totalmethods": 10, "classesinassembly": [
+        { "name": "MockObserver", "coverage": 100, "coveredlines": 6, "coverablelines": 6, "totallines": 78, "branchcoverage": null, "coveredbranches": 0, "totalbranches": 0, "methodcoverage": 100, "coveredmethods": 5, "totalmethods": 5 },
+        { "name": "MsgHandlerTests", "coverage": 100, "coveredlines": 32, "coverablelines": 32, "totallines": 78, "branchcoverage": null, "coveredbranches": 0, "totalbranches": 0, "methodcoverage": 100, "coveredmethods": 5, "totalmethods": 5 } ] } ]
   }
 }

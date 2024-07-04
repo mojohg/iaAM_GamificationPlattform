@@ -1,25 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
 <CoverageReport scope="Summary">
   <Summary>
-    <Generatedon>04.07.2024 - 14:08:07</Generatedon>
+    <Generatedon>04.07.2024 - 18:06:00</Generatedon>
     <Parser>MultiReportParser (2x OpenCoverParser)</Parser>
     <Assemblies>1</Assemblies>
-    <Classes>1</Classes>
+    <Classes>2</Classes>
     <Files>1</Files>
-    <Coveredlines>5</Coveredlines>
+    <Coveredlines>38</Coveredlines>
     <Uncoveredlines>0</Uncoveredlines>
-    <Coverablelines>5</Coverablelines>
-    <Totallines>25</Totallines>
+    <Coverablelines>38</Coverablelines>
+    <Totallines>78</Totallines>
     <Linecoverage>100</Linecoverage>
     <Coveredbranches>0</Coveredbranches>
     <Totalbranches>0</Totalbranches>
-    <Coveredmethods>2</Coveredmethods>
-    <Totalmethods>2</Totalmethods>
+    <Coveredmethods>10</Coveredmethods>
+    <Totalmethods>10</Totalmethods>
     <Methodcoverage>100</Methodcoverage>
   </Summary>
   <Coverage>
-    <Assembly name="Tests" classes="1" coverage="100" coveredlines="5" coverablelines="5" totallines="25" branchcoverage="" coveredbranches="0" totalbranches="0" coveredmethods="2" totalmethods="2" methodcoverage="100">
-      <Class name="NewTestScript" coverage="100" coveredlines="5" coverablelines="5" totallines="25" branchcoverage="" coveredbranches="0" totalbranches="0" coveredmethods="2" totalmethods="2" methodcoverage="100" />
+    <Assembly name="Tests" classes="2" coverage="100" coveredlines="38" coverablelines="38" totallines="156" branchcoverage="" coveredbranches="0" totalbranches="0" coveredmethods="10" totalmethods="10" methodcoverage="100">
+      <Class name="MockObserver" coverage="100" coveredlines="6" coverablelines="6" totallines="78" branchcoverage="" coveredbranches="0" totalbranches="0" coveredmethods="5" totalmethods="5" methodcoverage="100" />
+      <Class name="MsgHandlerTests" coverage="100" coveredlines="32" coverablelines="32" totallines="78" branchcoverage="" coveredbranches="0" totalbranches="0" coveredmethods="5" totalmethods="5" methodcoverage="100" />
     </Assembly>
   </Coverage>
 </CoverageReport>
