@@ -1,0 +1,234 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1 &1681468978007506350
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 2086782822723980103}
+  m_Layer: 0
+  m_Name: MqttUtils
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &2086782822723980103
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1681468978007506350}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children:
+  - {fileID: 7931483534195849078}
+  - {fileID: 4325969738531035208}
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &2226495025155709270
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 4325969738531035208}
+  - component: {fileID: 592241578304501483}
+  m_Layer: 0
+  m_Name: MsgHandler
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &4325969738531035208
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2226495025155709270}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 2086782822723980103}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &592241578304501483
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2226495025155709270}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4a657a0d4ffb1f2439d704883eff9be6, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  userCoins: 0
+  userScore: 0
+  userLevel: 0
+  username: 
+  MqttClient: {fileID: 8812231097289404648}
+  IsConnected: {fileID: 0}
+--- !u!1 &9082696515746115257
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 7931483534195849078}
+  - component: {fileID: 8812231097289404648}
+  - component: {fileID: 1452964965550785476}
+  - component: {fileID: 179653915462852703}
+  m_Layer: 0
+  m_Name: MqttClient
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &7931483534195849078
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 9082696515746115257}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 2086782822723980103}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &8812231097289404648
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 9082696515746115257}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 7e8fc4a343fe5454cabcefa70516d321, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  ClientId: Unity
+  Host: mqtt.i40-iaam.de
+  Port: 1883
+  Username: i40
+  Password: 123lalelu
+  Websocket: 0
+  WebsocketPath: /mqtt
+  UseTLS: 0
+  AllowUntrusted: 1
+  CleanSession: 1
+  ConnectTimeoutInSeconds: 3
+  ReconnectInSeconds: 5
+  DebugMessages: 1
+  BirthTopic: 
+  BirthMessage: Online
+  BirthQualityOfService: 0
+  BirthRetain: 1
+  WillTopic: 
+  WillMessage: Offline
+  WillQualityOfService: 0
+  WillRetain: 1
+  WillOnDisconnect: 1
+  ConnectFlag: 1
+  ConnectState: 0
+  ReconnectTimer: 0
+  SubscribeQOS: 0
+  SubscribeTopics:
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/DATA/PROGRESSBAR
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/INIT/PROGRESSBAR
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/RESPONSE
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/ADD_BACKGROUND
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/DATA/CHALLENGE
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/DATA/CHALLENGE/CONTROL
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/EVALUATION/RESULT
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/EVALUATION/TOTALRAW
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/DATA/CHALLENGE/CONTROL
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/RANKING
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/EVALUATION/TOTALSCORE
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/SCORE
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/COINS
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/HISTORY/DATA
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/FEATURE/JOKE/DATA
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/EVALUATION/AUTOTRIGGER
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/COIN/RESPONSE
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/BACKGROUND/PURCHASE/RESPONSE
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/EFFECT/PURCHASE/RESPONSE
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/PRESTIGE/STATE
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/BACKGROUNDS
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/CONFIG/UPDATE
+  - MVG_ESCH/PRODUCTION/MW/KST/001/GAMING/USERDATA/EFFECTS
+  - MVG_ESCH/PRODUCTION/MW/KST/0001/ACTIVEMODULES/STATUS
+  OnConnected:
+    m_PersistentCalls:
+      m_Calls: []
+  OnDisconnected:
+    m_PersistentCalls:
+      m_Calls: []
+  BeforeDisconnected:
+    m_PersistentCalls:
+      m_Calls: []
+  OnMessageArrived:
+    m_PersistentCalls:
+      m_Calls:
+      - m_Target: {fileID: 592241578304501483}
+        m_TargetAssemblyTypeName: Rocworks.Mqtt.MsgHandler, Assembly-CSharp
+        m_MethodName: OnMessageArrived
+        m_Mode: 0
+        m_Arguments:
+          m_ObjectArgument: {fileID: 0}
+          m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
+          m_IntArgument: 0
+          m_FloatArgument: 0
+          m_StringArgument: 
+          m_BoolArgument: 0
+        m_CallState: 2
+  OnMessageArrivedInUiThread: 1
+--- !u!114 &1452964965550785476
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 9082696515746115257}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9ca33a5a40c82ea4196338e302b5a365, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  Config: {fileID: 0}
+--- !u!114 &179653915462852703
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 9082696515746115257}
+  m_Enabled: 0
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1b76f4b72a59130478efd42f71dd6181, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  Config: {fileID: 0}
