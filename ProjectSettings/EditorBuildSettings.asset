@@ -5,7 +5,10 @@ EditorBuildSettings:
   m_ObjectHideFlags: 0
   serializedVersion: 2
   m_Scenes:
-  - enabled: 1
+  - enabled: 0
     path: Assets/Scenes/GamificationPlattform.unity
-    guid: 9fc0d4010bbf28b4594072e72b8655ab
+    guid: 568041ef158861b4a828fc36e8e17341
+  - enabled: 1
+    path: Assets/Tailored_GamificationPlattform.unity
+    guid: 76650097a200f4b4fa33a3680c1576ef
   m_configObjects: {}

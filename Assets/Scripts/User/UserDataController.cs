@@ -1,4 +1,4 @@
-using System.Collections;
+using System;
 using UnityEngine;
 using UnityEngine.UI;
 using Newtonsoft.Json.Linq;
@@ -6,232 +6,250 @@ using Rocworks.Mqtt;
 
 public class UserdataController : MonoBehaviour, IObserver
 {
+    [Header("UI")]
     [SerializeField] private Text coinText;      // UI to display coins
     [SerializeField] private Text scoreText;     // UI to display score
     [SerializeField] private Text usernameText;  // UI to display username
-    [SerializeField] private Text levelText;  // UI to display username
+    [SerializeField] private Text levelText;     // UI to display level
     [SerializeField] private GameObject adminOverlay;
 
-    private MsgHandler msgHandler;
+    [Header("MQTT / MsgHandler")]
+    [SerializeField] private MsgHandler msgHandler;
 
-    private void Start()
+    [Header("Topic-Konfiguration")]
+    [Tooltip("MQTT-Gruppe, z.B. GAMING")]
+    [SerializeField] private string group = "GAMING";
+
+    [Tooltip("Topic-Key relativ zur Gruppe, z.B. USERDATA/OVERVIEW")]
+    [SerializeField] private string category = "USERDATA/OVERVIEW";
+
+    // Optional: interne Events, falls du irgendwo im Code direkt Userdaten setzen willst
+    private const string LocalUsernameTopic = "UserDataUpdate/Username";
+    private const string LocalCoinsTopic    = "UserDataUpdate/Coins";
+    private const string LocalScoreTopic    = "UserDataUpdate/Score";
+    private const string LocalLevelTopic    = "UserDataUpdate/Level";
+
+    private string UserdataTopic => TopicNamespace.TopicFor(group, category);
+
+    private void Awake()
     {
-        // Den MsgHandler in der Szene finden
-        msgHandler = FindObjectOfType<MsgHandler>();
+        if (!msgHandler)
+            msgHandler = FindObjectOfType<MsgHandler>();
 
-        if (msgHandler != null)
-        {
-            // Registriere den Controller für die relevanten Topics
-            // Die ersten beiden Topics "MVG_ESCH..." sind vermutlich externe Rohdaten im JSON-Format
-            msgHandler.RegisterObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/SCORE", this);
-            msgHandler.RegisterObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/COINS", this);
-
-            // Die folgenden Topics werden intern aus dem MsgHandler gesendet und liefern bereits fertige Werte (float oder string)
-            msgHandler.RegisterObserver("UserDataUpdate/Username", this);
-            msgHandler.RegisterObserver("UserDataUpdate/Coins", this);
-            msgHandler.RegisterObserver("UserDataUpdate/Score", this);
-            msgHandler.RegisterObserver("UserDataUpdate/Level", this);
-        }
-        else
-        {
-            Debug.LogError("MsgHandler not found in the scene!");
-        }
+        if (!msgHandler)
+            Debug.LogError("[UserdataController] MsgHandler not found in scene!");
     }
 
-    private void OnDestroy()
+    private void OnEnable()
     {
-        if (msgHandler != null)
-        {
-            // Observer sauber entfernen
-            msgHandler.RemoveObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/SCORE", this);
-            msgHandler.RemoveObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/COINS", this);
+        if (msgHandler == null) return;
 
-            msgHandler.RemoveObserver("UserDataUpdate/Username", this);
-            msgHandler.RemoveObserver("UserDataUpdate/Coins", this);
-            msgHandler.RemoveObserver("UserDataUpdate/Score", this);
-            msgHandler.RemoveObserver("UserDataUpdate/Level", this);
-        }
+        // Haupt-Topic aus dem Backend
+        msgHandler.RegisterObserver(UserdataTopic, this);
+
+        // Optionale lokale Events (falls irgendwo im Code genutzt)
+        msgHandler.RegisterObserver(LocalUsernameTopic, this);
+        msgHandler.RegisterObserver(LocalCoinsTopic, this);
+        msgHandler.RegisterObserver(LocalScoreTopic, this);
+        msgHandler.RegisterObserver(LocalLevelTopic, this);
     }
 
+    private void OnDisable()
+    {
+        if (msgHandler == null) return;
+
+        msgHandler.RemoveObserver(UserdataTopic, this);
+
+        msgHandler.RemoveObserver(LocalUsernameTopic, this);
+        msgHandler.RemoveObserver(LocalCoinsTopic, this);
+        msgHandler.RemoveObserver(LocalScoreTopic, this);
+        msgHandler.RemoveObserver(LocalLevelTopic, this);
+    }
+
+    // ---------------------------------------------------------
+    // IObserver
+    // ---------------------------------------------------------
     public void OnNotify(string eventType, object data)
     {
-        Debug.Log($"UserdataController: Received event for topic {eventType}");
+        Debug.Log($"[UserdataController] Received event '{eventType}' with data: {data}");
 
-        // Verarbeite die verschiedenen Topics
-        if (eventType == "MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/SCORE")
+        if (eventType == UserdataTopic)
         {
-            // Hier erwartet man vermutlich ein JSON-Objekt oder String für Score
-            HandleExternalScoreData(data);
+            HandleUserdataJson(data);
         }
-        else if (eventType == "MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/COINS")
+        else if (eventType == LocalUsernameTopic)
         {
-            // Hier erwartet man vermutlich ein JSON-Objekt oder String für Coins
-            HandleExternalCoinData(data);
-        }
-        else if (eventType == "UserDataUpdate/Username")
-        {
-            // Hier ist data bereits ein string (Username)
             HandleUsernameData(data);
         }
-        else if (eventType == "UserDataUpdate/Coins")
+        else if (eventType == LocalCoinsTopic)
         {
-            // Hier ist data bereits ein float (Coins)
-            HandleInternalCoinData(data);
+            HandleInternalCoinsData(data);
         }
-        else if (eventType == "UserDataUpdate/Score")
+        else if (eventType == LocalScoreTopic)
         {
-            // Hier ist data bereits ein float (Score)
             HandleInternalScoreData(data);
         }
-          else if (eventType == "UserDataUpdate/Level")
+        else if (eventType == LocalLevelTopic)
         {
-            // Hier ist data bereits ein float (Score)
-            Debug.Log("Level Info received");
             HandleInternalLevelData(data);
         }
         else
         {
-            Debug.LogWarning($"Unhandled event type: {eventType}");
+            Debug.LogWarning($"[UserdataController] Unhandled event type: {eventType}");
         }
     }
 
-    private void HandleExternalScoreData(object data)
+    // ---------------------------------------------------------
+    // Backend-JSON: alle Daten in einem Payload
+    // ---------------------------------------------------------
+    private void HandleUserdataJson(object data)
     {
-        // Externe Daten, wahrscheinlich JSON
-        Debug.Log($"Handling external score data: {data}");
-        if (data is string jsonData)
+        if (data is not string jsonString)
         {
-            JObject parsedData = JObject.Parse(jsonData);
-
-            if (parsedData["score"] != null && float.TryParse(parsedData["score"].ToString(), out float updatedScore))
-            {
-                scoreText.text = $"Score: {updatedScore:F2}"; // Zwei Dezimalstellen
-                Debug.Log($"Updated score from external data: {updatedScore}");
-            }
-            else
-            {
-                Debug.LogError($"Invalid or missing 'score' field in JSON: {jsonData}");
-            }
-        }
-        else
-        {
-            Debug.LogError($"Invalid data type for external score data: {data.GetType()}");
-        }
-    }
-
-    private void HandleExternalLevelData(object data)
-        {
-            // Externe Daten, wahrscheinlich JSON
-            Debug.Log($"Handling external Level data: {data}");
-            if (data is string jsonData)
-            {
-                JObject parsedData = JObject.Parse(jsonData);
-
-                if (parsedData["level"] != null && float.TryParse(parsedData["level"].ToString(), out float updatedLevel))
-                {
-                    levelText.text = $"Level: {updatedLevel:F2}";
-                    Debug.Log($"Updated Level from external data: {updatedLevel}");
-                }
-                else
-                {
-                    Debug.LogError($"Invalid or missing 'level' field in JSON: {jsonData}");
-                }
-            }
-            else
-            {
-                Debug.LogError($"Invalid data type for external level data: {data.GetType()}");
-            }
+            Debug.LogError($"[UserdataController] Expected JSON string for userdata, got: {data?.GetType()}");
+            return;
         }
 
-    private void HandleExternalCoinData(object data)
-    {
-        // Externe Daten, wahrscheinlich JSON
-        Debug.Log($"Handling external coin data: {data}");
-        if (data is string jsonData)
+        try
         {
-            JObject parsedData = JObject.Parse(jsonData);
+            var root = JToken.Parse(jsonString);
+            var payload = root["data"] ?? root;
 
-            if (parsedData["coins"] != null && float.TryParse(parsedData["coins"].ToString(), out float updatedCoins))
+            // username
+            string username = payload["username"]?.ToString();
+            if (!string.IsNullOrEmpty(username))
             {
-                coinText.text = $"Coins: {updatedCoins:F2}";
-                Debug.Log($"Updated coins from external data: {updatedCoins}");
+                SetUsername(username);
             }
-            else
+
+            // coins
+            if (TryReadFloat(payload, "coins", out float coins))
             {
-                Debug.LogError($"Invalid or missing 'coins' field in JSON: {jsonData}");
+                SetCoins(coins);
+            }
+
+            // score
+            if (TryReadFloat(payload, "score", out float score))
+            {
+                SetScore(score);
+            }
+
+            // level
+            if (TryReadFloat(payload, "level", out float level))
+            {
+                SetLevel(level);
+            }
+
+            // optionales Admin-Flag
+            if (payload["is_admin"] != null && bool.TryParse(payload["is_admin"]?.ToString(), out bool isAdmin))
+            {
+                ApplyAdminState(isAdmin);
+            }
+            else if (!string.IsNullOrEmpty(username))
+            {
+                // Fallback: bestimmter Username schaltet Admin-Mode
+                ApplyAdminState(username == "AdminUser");
             }
         }
-        else
+        catch (Exception ex)
         {
-            Debug.LogError($"Invalid data type for external coin data: {data.GetType()}");
+            Debug.LogError($"[UserdataController] Error parsing userdata JSON: {ex}");
         }
     }
 
+    // ---------------------------------------------------------
+    // Lokale / interne Updates (falls genutzt)
+    // ---------------------------------------------------------
     private void HandleUsernameData(object data)
     {
-        Debug.Log($"Handling username data: {data}");
-        if (data is string updatedUsername)
+        if (data is not string username)
         {
-            usernameText.text = $"Username: {updatedUsername}";
-            Debug.Log($"Updated username: {updatedUsername}");
-            if (updatedUsername == "AdminUser")
-            {
-                adminOverlay.SetActive(false); // Admin kann Buttons nutzen
-                Debug.Log("Admin Mode activated");
-            }
-            else
-            {
-                adminOverlay.SetActive(true); // Standard-User: Buttons blockieren
-                Debug.Log("Standard Mode: Admin buttons disabled");
-            }
+            Debug.LogError($"[UserdataController] Invalid username data type: {data?.GetType()}");
+            return;
         }
-        else
-        {
-            Debug.LogError($"Invalid data type for username: {data.GetType()}");
-        }
+
+        SetUsername(username);
+        ApplyAdminState(username == "AdminUser");
     }
 
-    private void HandleInternalCoinData(object data)
+    private void HandleInternalCoinsData(object data)
     {
-        // Hier kommt ein float rein, kein JSON
-        Debug.Log($"Handling internal coin data: {data}");
-        if (data is float updatedCoins)
+        if (data is not float coins)
         {
-            coinText.text = $"Coins: {updatedCoins:F2}";
-            Debug.Log($"Updated coins (internal): {updatedCoins}");
+            Debug.LogError($"[UserdataController] Invalid coins data type: {data?.GetType()}");
+            return;
         }
-        else
+
+        SetCoins(coins);
+    }
+
+    private void HandleInternalScoreData(object data)
+    {
+        if (data is not float score)
         {
-            Debug.LogError($"Invalid data type for internal coins: {data.GetType()}");
+            Debug.LogError($"[UserdataController] Invalid score data type: {data?.GetType()}");
+            return;
         }
+
+        SetScore(score);
     }
 
     private void HandleInternalLevelData(object data)
-        {
-            // Hier kommt ein float rein, kein JSON
-            Debug.Log($"Handling internal level data: {data}");
-            if (data is float updatedLevel)
-            {
-                levelText.text = $"Level: {updatedLevel:F2}";
-                Debug.Log($"Updated level (internal): {updatedLevel}");
-            }
-            else
-            {
-                Debug.LogError($"Invalid data type for internal level: {data.GetType()}");
-            }
-        }
-    private void HandleInternalScoreData(object data)
     {
-        // Hier kommt ein float rein, kein JSON
-        Debug.Log($"Handling internal score data: {data}");
-        if (data is float updatedScore)
+        if (data is not float level)
         {
-            scoreText.text = $"Score: {updatedScore:F2}";
-            Debug.Log($"Updated score (internal): {updatedScore}");
+            Debug.LogError($"[UserdataController] Invalid level data type: {data?.GetType()}");
+            return;
         }
-        else
-        {
-            Debug.LogError($"Invalid data type for internal score: {data.GetType()}");
-        }
+
+        SetLevel(level);
+    }
+
+    // ---------------------------------------------------------
+    // UI-Setter (zentral, damit alles konsistent ist)
+    // ---------------------------------------------------------
+    private void SetUsername(string username)
+    {
+        if (usernameText)
+            usernameText.text = $"Username: {username}";
+    }
+
+    private void SetCoins(float coins)
+    {
+        if (coinText)
+            coinText.text = $"Coins: {coins:F2}";
+    }
+
+    private void SetScore(float score)
+    {
+        if (scoreText)
+            scoreText.text = $"Score: {score:F2}";
+    }
+
+    private void SetLevel(float level)
+    {
+        if (levelText)
+            levelText.text = $"Level: {level:F0}";
+    }
+
+    private void ApplyAdminState(bool isAdmin)
+    {
+        if (!adminOverlay) return;
+
+        // Overlay blockiert normale User → Admin = Overlay aus
+        adminOverlay.SetActive(!isAdmin);
+
+        Debug.Log($"[UserdataController] Admin state: {(isAdmin ? "Admin" : "Standard User")}");
+    }
+
+    // ---------------------------------------------------------
+    // Helper
+    // ---------------------------------------------------------
+    private bool TryReadFloat(JToken token, string field, out float value)
+    {
+        value = 0f;
+        var t = token[field];
+        if (t == null) return false;
+        return float.TryParse(t.ToString(), out value);
     }
 }

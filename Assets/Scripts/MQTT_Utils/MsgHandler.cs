@@ -1,470 +1,314 @@
-using System.Collections;
+using System;
 using System.Collections.Generic;
-using System.Globalization;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.UI;
-using Newtonsoft.Json.Linq;
-using System;
 
 namespace Rocworks.Mqtt
 {
-    /// <summary>
-    /// The msgHandler class handles MQTT messages and notifies registered observers about events.
-    /// Implements the ISubject interface to manage observers.
-    /// </summary>
     public class MsgHandler : MonoBehaviour, ISubject
     {
+        [Header("MQTT")]
+        public MqttClient MqttClient;
+        public Toggle IsConnected;
+
+        [Header("Subscription Options")]
+        [Tooltip("Nur aktivieren, wenn KEIN MqttAutoSubscriber in der Szene die Root-Wildcards managed.")]
+        public bool SubscribeRootWildcard = false;
+
+        // --- User/Observer ---
         [SerializeField] private float userCoins;
         [SerializeField] private float userScore;
         [SerializeField] private float userLevel;
         [SerializeField] private string username;
-        private string  userRights;
-        private JArray backgrounds;
-        private JArray badges;
-        private JArray avatars;
-        private JArray effects;
-        private JArray music;
-        private String automodeStatus;
-        private JArray scorePresets;
+        private string userRights;
+        private JArray backgrounds, badges, avatars, effects, music, scorePresets;
+        private string automodeStatus;
 
-        /// <summary>
-        /// The MQTT client for handling communication.
-        /// </summary>
-        public MqttClient MqttClient;
-
-        /// <summary>
-        /// Toggle to display the connection status.
-        /// </summary>
-        public Toggle IsConnected;
-
-        // Dictionary to manage observers by topic
-        private Dictionary<string, List<IObserver>> topicObservers = new Dictionary<string, List<IObserver>>();
-
-        /// <summary>
-        /// Indicates whether the MQTT client is connected.
-        /// </summary>
+        private readonly Dictionary<string, List<IObserver>> topicObservers = new();
         public bool IsMqttConnected { get; private set; }
+        private readonly HashSet<string> _activeSubs = new();
 
-        /// <summary>
-        /// Initializes the msgHandler and subscribes to MQTT events.
-        /// </summary>
-        void Start()
+        private void OnEnable()
         {
             if (MqttClient == null)
-                {
-                    Debug.LogError("MQTT Client is not assigned in the Inspector.");
-                    return;
-                }
-            // Subscribe to MQTT events
+            {
+                Debug.LogError("[MsgHandler] MQTT Client not assigned!");
+                enabled = false;
+                return;
+            }
+
             MqttClient.OnConnected.AddListener(OnConnected);
             MqttClient.OnDisconnected.AddListener(OnDisconnected);
             MqttClient.OnMessageArrived.AddListener(OnMessageArrived);
+
+            TopicNamespace.OnRootChanged += HandleRootChanged;
         }
 
-        /// <summary>
-        /// Cleans up the subscriptions to MQTT events when the object is destroyed.
-        /// </summary>
-        void OnDestroy()
+        private void OnDisable()
         {
-            // Unsubscribe from MQTT events
             MqttClient.OnConnected.RemoveListener(OnConnected);
             MqttClient.OnDisconnected.RemoveListener(OnDisconnected);
             MqttClient.OnMessageArrived.RemoveListener(OnMessageArrived);
+
+            TopicNamespace.OnRootChanged -= HandleRootChanged;
         }
 
-        /// <summary>
-        /// Registers an observer to receive notifications for a specific topic.
-        /// </summary>
-        /// <param name="topic">The topic to subscribe to.</param>
-        /// <param name="observer">The observer to register.</param>
-public void RegisterObserver(string topic, IObserver observer)
-{
-    if (!topicObservers.ContainsKey(topic))
-    {
-        topicObservers[topic] = new List<IObserver>();
-        Debug.Log($"Created new topic list for: {topic}");
-    }
-
-    if (!topicObservers[topic].Contains(observer))
-    {
-        topicObservers[topic].Add(observer);
-        Debug.Log($"Observer registered for topic: {topic}");
-    }
-    else
-    {
-        Debug.LogWarning($"Observer is already registered for topic: {topic}");
-    }
-}
-
-        /// <summary>
-        /// Removes an observer so it no longer receives notifications for a specific topic.
-        /// </summary>
-        /// <param name="topic">The topic to unsubscribe from.</param>
-        /// <param name="observer">The observer to remove.</param>
-        public void RemoveObserver(string topic, IObserver observer)
+        // ---------- Observer Mgmt ----------
+        public void RegisterObserver(string topic, IObserver observer)
         {
-            if (topicObservers.ContainsKey(topic))
+            if (string.IsNullOrWhiteSpace(topic) || observer == null) return;
+            if (!topicObservers.TryGetValue(topic, out var list))
             {
-                if (topicObservers[topic].Contains(observer))
-                {
-                    topicObservers[topic].Remove(observer);
-                }
+                list = new List<IObserver>();
+                topicObservers[topic] = list;
+                Debug.Log($"[MsgHandler] Created observer list for: {topic}");
+            }
+            if (!list.Contains(observer))
+            {
+                list.Add(observer);
+                Debug.Log($"[MsgHandler] Observer registered for topic: {topic}");
             }
         }
 
-        /// <summary>
-        /// Notifies all registered observers of an event for a specific topic.
-        /// </summary>
-        /// <param name="topic">The topic of the event.</param>
-        /// <param name="data">Any data associated with the event.</param>
-        public void NotifyObservers(string topic, object data)
-{
-    if (topicObservers.ContainsKey(topic))
-    {
-        foreach (var observer in topicObservers[topic])
+        public void RemoveObserver(string topic, IObserver observer)
         {
-            // Direkt OnNotify aufrufen, egal welcher Typ
-            observer.OnNotify(topic, data);
+            if (string.IsNullOrWhiteSpace(topic) || observer == null) return;
+            if (topicObservers.TryGetValue(topic, out var list))
+            {
+                list.Remove(observer);
+                if (list.Count == 0) topicObservers.Remove(topic);
+            }
         }
-    }
 
-    if (data is JObject message)
-    {
-        bool shouldPublish = message["mqtt"] != null && (bool)message["mqtt"];
-        if (shouldPublish)
+        public void NotifyObservers(string topic, object data)
         {
-            PublishMessage(topic, message.ToString());
+            if (topicObservers.TryGetValue(topic, out var list))
+                foreach (var obs in list) obs.OnNotify(topic, data);
+
+            if (data is JObject msg && msg["mqtt"] != null && (bool)msg["mqtt"])
+                PublishMessage(topic, msg.ToString());
         }
-    }
-}
+
+        private void RemapObserverTopics(string oldRoot, string newRoot)
+        {
+            if (string.IsNullOrEmpty(oldRoot) || string.IsNullOrEmpty(newRoot)) return;
+
+            var remapped = new Dictionary<string, List<IObserver>>();
+            foreach (var kv in topicObservers)
+            {
+                var topic = kv.Key;
+                var list = kv.Value;
+
+                if (topic.StartsWith(oldRoot + "/", StringComparison.OrdinalIgnoreCase))
+                {
+                    var suffix = topic.Substring(oldRoot.Length).TrimStart('/');
+                    var newTopic = $"{newRoot}/{suffix}";
+                    remapped[newTopic] = list;
+                    if (MqttClient.DebugMessages)
+                        Debug.Log($"[MsgHandler] Remapped {topic} → {newTopic}");
+                }
+                else remapped[topic] = list;
+            }
+            topicObservers.Clear();
+            foreach (var kv in remapped) topicObservers[kv.Key] = kv.Value;
+        }
+
+        // ---------- MQTT ----------
+        private void OnConnected()
+        {
+            IsMqttConnected = true;
+
+            if (SubscribeRootWildcard && TopicNamespace.IsReady)
+                SubscribeRootWildcardOnce(TopicNamespace.CurrentRoot);
+
+            if (IsConnected != null) IsConnected.isOn = true;
+            if (MqttClient.DebugMessages)
+                Debug.Log("[MsgHandler] Connected to MQTT Broker");
+        }
+
+        private void OnDisconnected()
+        {
+            IsMqttConnected = false;
+            if (IsConnected != null) IsConnected.isOn = false;
+            if (MqttClient.DebugMessages)
+                Debug.Log("[MsgHandler] Disconnected from MQTT Broker");
+        }
 
         private void PublishMessage(string topic, string payload)
         {
-            if (MqttClient != null)
-            {
-                Debug.Log($"Publishing message to topic {topic}: {payload}");
+            if (MqttClient?.Connection != null)
                 MqttClient.Connection.Publish(topic, payload);
-            }
-            else
-            {
-                Debug.LogError("MQTT Client is not connected, message cannot be published.");
-            }
         }
-        
-        /// <summary>
-        /// Handles incoming MQTT messages and notifies observers based on the message topic.
-        /// </summary>
-        /// <param name="message">The received MQTT message.</param>
+
         public void OnMessageArrived(MqttMessage message)
         {
-            Debug.Log($"Topic: {message.GetTopic()}, Payload: {message.GetString()}");
-            NotifyObservers(message.GetTopic(), message.GetString()); 
-            if (message.GetTopic() == "MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA")
+            string topic = message.GetTopic();
+            string payload = message.GetString();
+
+            if (MqttClient.DebugMessages)
+                Debug.Log($"[MsgHandler] RX → {topic}");
+
+            NotifyObservers(topic, payload);
+
+            string userDataTopic   = TopicNamespace.TopicFor("PRODUCTION", "USERDATA");
+            string responseTopic   = TopicNamespace.TopicFor("PRODUCTION", "RESPONSE");
+            string evaluationTopic = TopicNamespace.TopicFor("PRODUCTION", "EVALUATION/RESULT");
+            string scoreTopic      = TopicNamespace.TopicFor("PRODUCTION", "USERDATA/SCORE");
+            string coinsTopic      = TopicNamespace.TopicFor("PRODUCTION", "USERDATA/COINS");
+
+            if (topic == userDataTopic) HandleUserData(payload);
+            else if (topic == responseTopic) HandleLoginData(payload);
+            else if (topic == evaluationTopic) HandleEvaluationData(payload);
+            else if (topic == scoreTopic) HandleScoreData(payload);
+            else if (topic == coinsTopic) HandleCoinsData(payload);
+        }
+
+        private void HandleRootChanged(string oldRoot, string newRoot)
+        {
+            RemapObserverTopics(oldRoot, newRoot);
+
+            if (!SubscribeRootWildcard || !IsMqttConnected || MqttClient?.Connection == null)
+                return;
+
+            // alte Root-Wildcard abmelden, neue anmelden
+            var oldWc = $"{oldRoot?.Trim().Trim('/')}/#";
+            var newWc = $"{newRoot?.Trim().Trim('/')}/#";
+            SafeUnsubscribe(oldWc);
+            SafeSubscribe(newWc);
+        }
+
+        private void SubscribeRootWildcardOnce(string root)
+        {
+            var wc = $"{root?.Trim().Trim('/')}/#";
+            SafeSubscribe(wc);
+        }
+
+        private void SafeSubscribe(string topic)
+        {
+            if (string.IsNullOrWhiteSpace(topic)) return;
+            if (_activeSubs.Contains(topic)) return;
+            try
             {
-                HandleUserData(message.GetString());
+                int qos = Mathf.Clamp(MqttClient.SubscribeQOS, 0, 2);
+                MqttClient.Connection.Subscribe(topic, qos);
+                _activeSubs.Add(topic);
+                if (MqttClient.DebugMessages) Debug.Log($"[MsgHandler] SUB {topic} (QoS {qos})");
             }
-            else if (message.GetTopic() == "MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/RESPONSE")
+            catch (Exception ex)
             {
-                Debug.Log("Login information recieved");
-                HandleLoginData(message.GetString());
-            }
-            else if (message.GetTopic() == "MVG_ESCH/PRODUCTION/MW/KST/0001/EVALUATION/RESULT")
-            {
-                Debug.Log("Result recieved");
-                HandleEvaluationData(message.GetString());
-            }
-            else if (message.GetTopic() == "MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/SCORE")
-            {
-                // <-- Änderung: Hier externe Score-Daten verarbeiten
-                HandleScoreData(message.GetString());
-            }
-            else if (message.GetTopic() == "MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/COINS") // <-- Änderung: Externe Coins-Daten behandeln
-            {
-                HandleCoinsData(message.GetString()); // <-- Änderung: Neue Methode für Coins
-            }
-            else 
-            {
-                Debug.Log("No matching Topic");
+                Debug.LogError($"[MsgHandler] Subscribe failed for '{topic}': {ex.Message}");
             }
         }
 
-    
-        /// <summary>
-        /// Called when the MQTT client connects to the broker.
-        /// </summary>
-        private void OnConnected()
+        private void SafeUnsubscribe(string topic)
         {
-            Debug.Log("Connected to MQTT Broker");
-            IsMqttConnected = true;
+            if (string.IsNullOrWhiteSpace(topic)) return;
+            if (!_activeSubs.Contains(topic)) return;
+            try
+            {
+                MqttClient.Connection.Unsubscribe(topic);
+                _activeSubs.Remove(topic);
+                if (MqttClient.DebugMessages) Debug.Log($"[MsgHandler] UNSUB {topic}");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[MsgHandler] Unsubscribe failed for '{topic}': {ex.Message}");
+            }
         }
 
-        /// <summary>
-        /// Called when the MQTT client disconnects from the broker.
-        /// </summary>
-        private void OnDisconnected()
+        // ---------- Payload-Handler ----------
+        private void HandleUserData(string json)
         {
-            Debug.Log("Disconnected from MQTT Broker");
-            IsMqttConnected = false;
-        }
-
-        private void HandleUserData(string jsonData)
-        {
-            // Parse the incoming JSON to extract user data
-            JObject parsedData = JObject.Parse(jsonData);
-            username = parsedData["username"]?.ToString();
-            userCoins = parsedData["coins"] != null ? (int)parsedData["coins"] : 0;
-            userScore = parsedData["score"] != null ? (int)parsedData["score"] : 0;
-            userLevel = parsedData["level"] != null ? (int)parsedData["level"] : 0;
-            // Check for automode status
-            automodeStatus = parsedData["automode"] != null ? parsedData["automode"].ToString() : "Off";
-
-            Debug.Log($"Username: {username}, Coins: {userCoins}, Score: {userScore}, Level: {userLevel}");
+            var data = JObject.Parse(json);
+            username   = data["username"]?.ToString();
+            userCoins  = data["coins"]?.Value<float>() ?? 0;
+            userScore  = data["score"]?.Value<float>() ?? 0;
+            userLevel  = data["level"]?.Value<float>() ?? 0;
+            automodeStatus = data["automode"]?.ToString() ?? "Off";
             NotifyUI();
         }
-     private void HandleScoreData(string jsonData)
-        {
-            try
-            {
-                // JSON-String in ein JObject parsen
-                JObject parsedData = JObject.Parse(jsonData);
 
-                // Überprüfen, ob "score" im JSON enthalten ist
-                if (parsedData["score"] != null)
-                {
-                    // "score" extrahieren und verarbeiten
-                    if (float.TryParse(parsedData["score"].ToString(), out float parsedScore))
-                    {
-                        userScore = parsedScore; // Score setzen
-                        Debug.Log($"Received and parsed Score: {userScore}");
-                        NotifyObservers("UserDataUpdate/Score", userScore);
-                    }
-                    else
-                    {
-                        Debug.LogError($"Failed to parse 'score' as float: {parsedData["score"]}");
-                    }
-                }
-                else
-                {
-                    Debug.LogError("Score not found in the received JSON data.");
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"Error parsing JSON data: {ex}");
-            }
-        }
-
-        // <-- Änderung: Neue Methode zum Handling der externen Coins-Daten
-        private void HandleCoinsData(string jsonData)
+        private void HandleLoginData(string json)
         {
-            try
+            var parsed = JObject.Parse(json);
+            if (parsed["status"]?.ToString() == "success")
             {
-                JObject parsedData = JObject.Parse(jsonData);
-                if (parsedData["coins"] != null)
-                {
-                    if (float.TryParse(parsedData["coins"].ToString(), out float parsedCoins))
-                    {
-                        userCoins = parsedCoins;
-                        Debug.Log($"Received and parsed Coins: {userCoins}");
-                        NotifyObservers("UserDataUpdate/Coins", userCoins);
-                    }
-                    else
-                    {
-                        Debug.LogError($"Failed to parse 'coins' as float: {parsedData["coins"]}");
-                    }
-                }
-                else
-                {
-                    Debug.LogError("Coins not found in the received JSON data.");
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"Error parsing coins JSON data: {ex}");
-            }
-        }
-
-        private void HandleLoginData(string jsonData)
-        {
-            JObject parsedData = JObject.Parse(jsonData);
-            
-            if (parsedData["status"] != null && parsedData["status"].ToString() == "success")
-            {
-                JObject userData = (JObject)parsedData["user_data"];
-                username = userData["username"]?.ToString();
-                userCoins = userData["coins"] != null ? (float)userData["coins"] : 0;
-                userScore = userData["score"] != null ? (float)userData["score"] : 0;
-                userLevel = userData["level"] != null ? (float)userData["level"] : 0;
-                userRights = userData["rights"]?.ToString();
-                badges = (JArray)userData["badges"];
-                backgrounds = (JArray)userData["backgrounds"];
-                music = (JArray)userData["unlocked_music"];
-                avatars = (JArray)userData["unlocked_characters"];
-                effects = (JArray)userData["effects"];
-                scorePresets = (JArray)userData["score_presets"];
+                var user = (JObject)parsed["user_data"];
+                username   = user["username"]?.ToString();
+                userCoins  = user["coins"]?.Value<float>() ?? 0;
+                userScore  = user["score"]?.Value<float>() ?? 0;
+                userLevel  = user["level"]?.Value<float>() ?? 0;
+                userRights = user["rights"]?.ToString();
+                badges      = (JArray)user["badges"];
+                backgrounds = (JArray)user["backgrounds"];
+                music       = (JArray)user["unlocked_music"];
+                avatars     = (JArray)user["unlocked_characters"];
+                effects     = (JArray)user["effects"];
+                scorePresets= (JArray)user["score_presets"];
                 NotifyUI();
-                
             }
         }
 
-       private void HandleEvaluationData(string jsonData)
-{
-    try
-    {
-        // Parse the incoming JSON into a JObject
-        JObject parsedData = JObject.Parse(jsonData);
-
-        // Initialize variables with default values
-        float interpretationTime = 0f;
-        float processingTime = 0f;
-        float errorCorrectionTime = 0f;
-        int errorCount = 0;
-        bool completed = false;
-        List<string> issues = new List<string>();
-
-        // Interpretation Time
-        if (parsedData["interpretation_time"] != null && 
-            float.TryParse(parsedData["interpretation_time"].ToString(), out float interpretation))
+        private void HandleScoreData(string json)
         {
-            interpretationTime = interpretation;
-        }
-        else
-        {
-            Debug.LogWarning("Invalid or missing 'interpretation_time' in evaluation data. Defaulting to 0.");
-        }
-
-        // Processing Time
-        if (parsedData["processing_time"] != null && 
-            float.TryParse(parsedData["processing_time"].ToString(), out float processing))
-        {
-            processingTime = processing;
-        }
-        else
-        {
-            Debug.LogWarning("Invalid or missing 'processing_time' in evaluation data. Defaulting to 0.");
-        }
-
-        // Error Correction Time
-        if (parsedData["error_correction_time"] != null && 
-            float.TryParse(parsedData["error_correction_time"].ToString(), out float errorCorrection))
-        {
-            errorCorrectionTime = errorCorrection;
-        }
-        else
-        {
-            Debug.LogWarning("Invalid or missing 'error_correction_time' in evaluation data. Defaulting to 0.");
-        }
-
-        // Error Count
-        if (parsedData["error_count"] != null && 
-            int.TryParse(parsedData["error_count"].ToString(), out int errors))
-        {
-            errorCount = errors;
-        }
-        else
-        {
-            Debug.LogWarning("Invalid or missing 'error_count' in evaluation data. Defaulting to 0.");
-        }
-
-        // Completed
-        if (parsedData["completed"] != null && 
-            bool.TryParse(parsedData["completed"].ToString(), out bool isCompleted))
-        {
-            completed = isCompleted;
-        }
-        else
-        {
-            Debug.LogWarning("Invalid or missing 'completed' in evaluation data. Defaulting to false.");
-        }
-
-        // Issues
-        if (parsedData["issues"] != null && parsedData["issues"] is JArray issuesArray)
-        {
-            issues = issuesArray.ToObject<List<string>>();
-        }
-        else
-        {
-            Debug.LogWarning("Invalid or missing 'issues' in evaluation data. Defaulting to empty.");
-        }
-
-        // Log the received data
-        Debug.Log($"Evaluation Data: InterpretationTime={interpretationTime}, ProcessingTime={processingTime}, " +
-                $"ErrorCorrectionTime={errorCorrectionTime}, ErrorCount={errorCount}, Completed={completed}, " +
-                $"Issues={string.Join(", ", issues)}");
-
-        // Convert the data to a JArray for notification
-        JArray evaluationData = new JArray
-        {
-            new JObject
+            var data = JObject.Parse(json);
+            if (data["score"] != null && float.TryParse(data["score"].ToString(), out var s))
             {
-                ["key"] = "interpretation_time",
-                ["value"] = interpretationTime
-            },
-            new JObject
-            {
-                ["key"] = "processing_time",
-                ["value"] = processingTime
-            },
-            new JObject
-            {
-                ["key"] = "error_correction_time",
-                ["value"] = errorCorrectionTime
-            },
-            new JObject
-            {
-                ["key"] = "error_count",
-                ["value"] = errorCount
-            },
-            new JObject
-            {
-                ["key"] = "completed",
-                ["value"] = completed
-            },
-            new JObject
-            {
-                ["key"] = "issues",
-                ["value"] = new JArray(issues)
+                userScore = s;
+                NotifyObservers("UserDataUpdate/Score", userScore);
             }
-        };
+        }
 
-        // Notify observers
-        Debug.Log("Try to notidy ScoreController");
-        string evaluationDatajson = evaluationData.ToString();
-        NotifyObservers("EvaluationData/Workstep", evaluationDatajson);
-    }
-    catch (Exception ex)
-    {
-        Debug.LogError($"Error handling evaluation data: {ex.Message}");
-    }
-}
+        private void HandleCoinsData(string json)
+        {
+            var data = JObject.Parse(json);
+            if (data["coins"] != null && float.TryParse(data["coins"].ToString(), out var c))
+            {
+                userCoins = c;
+                NotifyObservers("UserDataUpdate/Coins", userCoins);
+            }
+        }
 
+        private void HandleEvaluationData(string json)
+        {
+            try
+            {
+                var parsed = JObject.Parse(json);
+                float interp = parsed["interpretation_time"]?.Value<float>() ?? 0;
+                float proc   = parsed["processing_time"]?.Value<float>() ?? 0;
+                float corr   = parsed["error_correction_time"]?.Value<float>() ?? 0;
+                int err      = parsed["error_count"]?.Value<int>() ?? 0;
+                bool done    = parsed["completed"]?.Value<bool>() ?? false;
+
+                var evaluationData = new JArray
+                {
+                    new JObject { ["key"] = "interpretation_time",  ["value"] = interp },
+                    new JObject { ["key"] = "processing_time",      ["value"] = proc },
+                    new JObject { ["key"] = "error_correction_time",["value"] = corr },
+                    new JObject { ["key"] = "error_count",          ["value"] = err },
+                    new JObject { ["key"] = "completed",            ["value"] = done }
+                };
+
+                NotifyObservers("EvaluationData/Workstep", evaluationData.ToString());
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[MsgHandler] Error handling evaluation data: {ex.Message}");
+            }
+        }
 
         private void NotifyUI()
         {
-            // Notify UI elements to update accordingly
-            Debug.Log("User data updated");
-                // Notify the relevant observers about the update
-           NotifyObservers("UserDataUpdate/Coins", userCoins);
-           NotifyObservers("UserDataUpdate/Score", userScore);
-            NotifyObservers("UserDataUpdate/Username", username);
-            NotifyObservers("UserDataUpdate/Level", userLevel);
-            string badgesJson = badges.ToString();
-            NotifyObservers("UserDataUpdate/Badges", badgesJson);
-            string backgroundsJson = backgrounds.ToString();
-            NotifyObservers("UserDataUpdate/Backgrounds", backgroundsJson);
-            string avatarsJson = avatars.ToString();
-            NotifyObservers("UserDataUpdate/Avatars", avatarsJson);
-            string musicJson = music.ToString();
-            NotifyObservers("UserDataUpdate/Music", musicJson);
-            string effectsJson = effects.ToString();
-            NotifyObservers("UserDataUpdate/Effects", effectsJson);
-            NotifyObservers("UserDataUpdate/AutoMode", automodeStatus);
-            NotifyObservers("UserDataUpdate/Rights", userRights);
-            string scorePresetsJson = scorePresets.ToString();
-            NotifyObservers("UserDataUpdate/ScorePresets", scorePresetsJson);
+            if (MqttClient.DebugMessages)
+                Debug.Log("[MsgHandler] Notifying UI about updated user data");
+
+            NotifyObservers("UserDataUpdate/Coins",     userCoins);
+            NotifyObservers("UserDataUpdate/Score",     userScore);
+            NotifyObservers("UserDataUpdate/Username",  username);
+            NotifyObservers("UserDataUpdate/Level",     userLevel);
+            NotifyObservers("UserDataUpdate/Rights",    userRights);
+            NotifyObservers("UserDataUpdate/AutoMode",  automodeStatus);
         }
     }
-
-   
-
 }

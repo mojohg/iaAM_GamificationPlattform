@@ -1,16 +1,16 @@
-using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 using Newtonsoft.Json.Linq;
-using System.Collections.Generic;
 using Rocworks.Mqtt;
 
 /// <summary>
-/// The StatisticController class manages the display of user and ranking statistics based on MQTT messages.
-/// Implements the IObserver interface to update statistics and notify observers when statistics are updated.
+/// Zeigt User- und Ranking-KPIs basierend auf MQTT-Nachrichten an.
+/// Hängt sich über MsgHandler als IObserver an ein Topic.
 /// </summary>
 public class StatisticController : MonoBehaviour, IObserver
 {
+    [Header("User KPIs")]
     [SerializeField] private Text performanceUserText;
     [SerializeField] private Text qualityUserText;
     [SerializeField] private Text maxScoreUserText;
@@ -18,6 +18,7 @@ public class StatisticController : MonoBehaviour, IObserver
     [SerializeField] private Text badgeCounterText;
     [SerializeField] private Text levelText;
 
+    [Header("Ranking KPIs")]
     [SerializeField] private Text performanceRankingText;
     [SerializeField] private Text qualityRankingText;
     [SerializeField] private Text maxScoreRankingText;
@@ -25,138 +26,142 @@ public class StatisticController : MonoBehaviour, IObserver
     [SerializeField] private Text badgeCounterRankingText;
     [SerializeField] private Text levelRankingText;
 
-    private Dictionary<string, Text> userTexts;
-    private Dictionary<string, Text> rankingTexts;
+    [Header("MQTT Topic")]
+    [Tooltip("Group innerhalb des TopicNamespace, z.B. GAMING")]
+    [SerializeField] private string group = "GAMING";
+
+    [Tooltip("Kategorie innerhalb der Group, z.B. RANKING")]
+    [SerializeField] private string category = "RANKING";
+
+    private readonly Dictionary<string, Text> userTexts   = new();
+    private readonly Dictionary<string, Text> rankingTexts = new();
+
     private MsgHandler msgHandler;
+    private string _topic;
 
-    /// <summary>
-    /// Initializes the text fields to default values and registers the observer with the MsgHandler.
-    /// </summary>
-    void Start()
+    void Awake()
     {
-        msgHandler = FindObjectOfType<MsgHandler>();
-        if (msgHandler != null)
-        {
-            msgHandler.RegisterObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/RANKING", this);
-        }
+        // MsgHandler suchen
+        if (!msgHandler) msgHandler = FindObjectOfType<MsgHandler>();
 
+        // Dictionaries einmalig aufbauen
         InitializeTextDictionaries();
+
+        // Default-Werte setzen
         UpdateDashboardToDefault();
     }
 
-    /// <summary>
-    /// Unregisters the observer from the MsgHandler when the object is destroyed.
-    /// </summary>
-    private void OnDestroy()
+    void OnEnable()
     {
-        if (msgHandler != null)
+        if (!msgHandler)
         {
-            msgHandler.RemoveObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/RANKING", this);
+            Debug.LogError("[StatisticController] MsgHandler not found in scene.");
+            return;
+        }
+
+        _topic = TopicNamespace.TopicFor(group, category);
+        msgHandler.RegisterObserver(_topic, this);
+
+        Debug.Log($"[StatisticController] Registered for topic: {_topic}");
+    }
+
+    void OnDisable()
+    {
+        if (msgHandler != null && !string.IsNullOrEmpty(_topic))
+        {
+            msgHandler.RemoveObserver(_topic, this);
+            Debug.Log($"[StatisticController] Unregistered from topic: {_topic}");
         }
     }
 
     /// <summary>
-    /// Initializes the dictionaries for user and ranking texts.
+    /// Initialisiert die Dictionaries für User- und Ranking-Texte.
     /// </summary>
     private void InitializeTextDictionaries()
     {
-        userTexts = new Dictionary<string, Text>
-        {
-            { "median_performance", performanceUserText },
-            { "median_quality", qualityUserText },
-            { "max_score", maxScoreUserText },
-            { "quality_streak", qualityStreakUserText },
-            { "badge_counter", badgeCounterText },
-            { "level", levelText}
-        };
+        userTexts.Clear();
+        userTexts.Add("median_performance", performanceUserText);
+        userTexts.Add("median_quality",     qualityUserText);
+        userTexts.Add("max_score",          maxScoreUserText);
+        userTexts.Add("quality_streak",     qualityStreakUserText);
+        userTexts.Add("badge_counter",      badgeCounterText);
+        userTexts.Add("level",              levelText);
 
-        rankingTexts = new Dictionary<string, Text>
-        {
-            { "median_performance", performanceRankingText },
-            { "median_quality", qualityRankingText },
-            { "max_score", maxScoreRankingText },
-            { "quality_streak", qualityStreakRankingText },
-            { "badge_counter", badgeCounterRankingText },
-            { "level", levelRankingText}
-        };
-}
+        rankingTexts.Clear();
+        rankingTexts.Add("median_performance", performanceRankingText);
+        rankingTexts.Add("median_quality",     qualityRankingText);
+        rankingTexts.Add("max_score",          maxScoreRankingText);
+        rankingTexts.Add("quality_streak",     qualityStreakRankingText);
+        rankingTexts.Add("badge_counter",      badgeCounterRankingText);
+        rankingTexts.Add("level",              levelRankingText);
+    }
 
-
-    /// <summary>
-    /// Handles MQTT messages to update the statistics dashboard.
-    /// </summary>
-    public void OnNotify(string eventType, object data)
+    // ---- IObserver ----
+    public void OnNotify(string topic, object data)
     {
-        if (eventType == "MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/RANKING")
+        if (topic != _topic) return;
+
+        Debug.Log($"[StatisticController] Received data for topic: {topic}");
+
+        if (data is not string jsonString || string.IsNullOrWhiteSpace(jsonString))
+            return;
+
+        try
         {
-            Debug.Log($"Received data for topic: {eventType}");
-            string jsonString = data as string;
+            JObject json = JObject.Parse(jsonString);
+            JObject kpis = (JObject)json["kpis"];
 
-            if (jsonString != null)
+            if (kpis == null)
             {
-                JObject json = JObject.Parse(jsonString);
-
-                // Extract KPIs
-                JObject kpis = (JObject)json["kpis"];
-
-                UpdateDashboardFromKpis(kpis);
-
-                // Notify observers about updates
-                NotifyObservers("StatisticsUpdated", null);
+                Debug.LogWarning("[StatisticController] Payload has no 'kpis' object.");
+                return;
             }
+
+            UpdateDashboardFromKpis(kpis);
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[StatisticController] Parse error: {e.Message}");
         }
     }
 
     /// <summary>
-    /// Updates the dashboard with the provided KPI data.
+    /// Aktualisiert das Dashboard mit den übergebenen KPI-Daten.
     /// </summary>
-    /// <param name="kpis">The KPI data as a JObject.</param>
     private void UpdateDashboardFromKpis(JObject kpis)
     {
-        // Update user statistics
+        // User-Statistiken
         foreach (var key in userTexts.Keys)
         {
+            if (!userTexts[key]) continue;
+
             string value = kpis[key]?["value"]?.ToString() ?? "N/A";
             userTexts[key].text = value;
         }
 
-        // Update ranking statistics
+        // Ranking-Statistiken
         foreach (var key in rankingTexts.Keys)
         {
+            if (!rankingTexts[key]) continue;
+
             string ranking = kpis[key]?["ranking"]?.ToString();
-            rankingTexts[key].text = ranking ?? "No Ranking"; // Fallback for null rankings
+            rankingTexts[key].text = ranking ?? "No Ranking";
         }
 
-        Debug.Log("Dashboard updated with new statistics.");
+        Debug.Log("[StatisticController] Dashboard updated with new statistics.");
     }
 
     /// <summary>
-    /// Resets the dashboard to default values ("N/A").
+    /// Setzt alle Texte auf Default ("N/A").
     /// </summary>
     private void UpdateDashboardToDefault()
     {
-        foreach (var key in userTexts.Keys)
-        {
-            userTexts[key].text = "N/A";
-        }
+        foreach (var kvp in userTexts)
+            if (kvp.Value) kvp.Value.text = "N/A";
 
-        foreach (var key in rankingTexts.Keys)
-        {
-            rankingTexts[key].text = "N/A";
-        }
+        foreach (var kvp in rankingTexts)
+            if (kvp.Value) kvp.Value.text = "N/A";
 
-        Debug.Log("Dashboard reset to default values.");
-    }
-
-    /// <summary>
-    /// Notifies all registered observers of an event.
-    /// </summary>
-    public void NotifyObservers(string eventType, object data)
-    {
-        Debug.Log($"Notifying observers for event: {eventType}");
-        foreach (var observer in FindObjectsOfType<StatisticController>())
-        {
-            observer.OnNotify(eventType, data);
-        }
+        Debug.Log("[StatisticController] Dashboard reset to default values.");
     }
 }

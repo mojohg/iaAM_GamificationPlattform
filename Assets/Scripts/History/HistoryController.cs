@@ -60,13 +60,11 @@ namespace GraphWorkaround
         }
 
         /// <summary>Anfrage ans Backend: liefere Historie. Optional: userId, limit, since.</summary>
-        public void RequestHistory(string userId = null, int? limit = null, string sinceIso = null)
+        public void RequestHistory()
         {
             if (msgHandler == null) return;
+            
             var jo = new JObject { ["mqtt"] = true };
-            if (!string.IsNullOrWhiteSpace(userId)) jo["user_id"] = userId;
-            if (limit.HasValue) jo["limit"] = Mathf.Max(1, limit.Value);
-            if (!string.IsNullOrWhiteSpace(sinceIso)) jo["since"] = sinceIso;
             msgHandler.NotifyObservers(_topicRequest, jo);
         }
 

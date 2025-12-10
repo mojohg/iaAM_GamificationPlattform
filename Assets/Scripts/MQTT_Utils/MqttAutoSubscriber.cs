@@ -1,53 +1,114 @@
-// MqttAutoSubscriber.cs
-using System.Collections;
+using System;
 using System.Collections.Generic;
 using UnityEngine;
-using Rocworks.Mqtt;
 
-[DefaultExecutionOrder(-50)]
-public class MqttAutoSubscriber : MonoBehaviour
+namespace Rocworks.Mqtt
 {
-    [Tooltip("Optional: MsgHandler wird automatisch gesucht, wenn leer.")]
-    public MsgHandler msgHandler;
-
-    [Tooltip("Welche Gruppen sollen automatisch via Wildcard subscribed werden?")]
-    public List<string> groups = new() { "RECOMMANDATION" };
-
-    [Tooltip("MQTT QoS für die Auto-Subscriptions.")]
-    public int qos = 1;
-
-    private static readonly HashSet<string> Subscribed = new(); // dedupe über Szene
-    private bool _started;
-
-    void Awake()
+    /// <summary>
+    /// Subscribt auf Root-bezogene Wildcards. Jetzt:
+    /// - wartet optional auf TopicNamespace.IsReady/OnRootReady
+    /// - resubscribt bei Rootänderung
+    /// </summary>
+    public class MqttAutoSubscriber : MonoBehaviour
     {
-        if (!msgHandler) msgHandler = FindObjectOfType<MsgHandler>();
-    }
+        public MqttClient MqttClient;
+        [Tooltip("Wildcard relativ zum Root (z. B. 'RECOMMANDATION/#' oder '#')")]
+        public List<string> RelativeWildcards = new() { "#" };
 
-    void OnEnable()
-    {
-        if (_started) return;
-        _started = true;
-        StartCoroutine(SubscribeWhenReady());
-    }
+        [Tooltip("Erst subscriben, wenn TopicNamespace.IsReady true ist (empfohlen)")]
+        public bool WaitForRootReady = true;
 
-    IEnumerator SubscribeWhenReady()
-    {
-        // warte, bis MQTT verbunden ist
-        while (msgHandler == null || msgHandler.MqttClient == null ||
-               msgHandler.MqttClient.Connection == null || !msgHandler.MqttClient.ConnectState)
+        private readonly HashSet<string> _active = new();
+
+        private void OnEnable()
         {
-            yield return null;
+            if (MqttClient == null)
+            {
+                Debug.LogError("[MqttAutoSubscriber] No MqttClient assigned");
+                enabled = false;
+                return;
+            }
+
+            MqttClient.OnConnected.AddListener(OnConnected);
+            MqttClient.OnDisconnected.AddListener(OnDisconnected);
+
+            TopicNamespace.OnRootChanged += HandleRootChanged;
+            if (WaitForRootReady && TopicNamespace.IsReady)
+            {
+                // nichts, OnConnected triggert Subscribe
+            }
         }
 
-        foreach (var g in groups)
+        private void OnDisable()
         {
-            var wildcard = TopicNamespace.WildcardFor(g);
-            if (Subscribed.Add(wildcard)) // nur einmal je Gruppe
+            MqttClient.OnConnected.RemoveListener(OnConnected);
+            MqttClient.OnDisconnected.RemoveListener(OnDisconnected);
+            TopicNamespace.OnRootChanged -= HandleRootChanged;
+        }
+
+        private void OnConnected()
+        {
+            if (WaitForRootReady && !TopicNamespace.IsReady) return;
+            SubscribeAllFor(TopicNamespace.CurrentRoot);
+        }
+
+        private void OnDisconnected()
+        {
+            // Verbindung weg — aktive Liste behalten; Broker vergisst Subscriptions,
+            // beim nächsten Connect subscriben wir neu.
+        }
+
+        private void HandleRootChanged(string oldRoot, string newRoot)
+        {
+            if (MqttClient?.Connection == null || !MqttClient.ConnectState) return;
+
+            // erst alte abmelden
+            if (!string.IsNullOrEmpty(oldRoot))
+                UnsubscribeAllFor(oldRoot);
+
+            // dann neue anmelden
+            if (!string.IsNullOrEmpty(newRoot))
+                SubscribeAllFor(newRoot);
+        }
+
+        private void SubscribeAllFor(string root)
+        {
+            if (MqttClient?.Connection == null) return;
+            root = root?.Trim().Trim('/');
+            int qos = Mathf.Clamp(MqttClient.SubscribeQOS, 0, 2);
+
+            foreach (var rel in RelativeWildcards)
             {
-                msgHandler.MqttClient.Connection.Subscribe(wildcard, qos);
-                Debug.Log($"[MqttAutoSubscriber] Subscribed: {wildcard} (QoS {qos})");
+                var wildcard = string.IsNullOrWhiteSpace(rel)
+                    ? $"{root}/#"
+                    : $"{root}/{rel.Trim().TrimStart('/')}";
+
+                if (_active.Contains(wildcard)) continue;
+
+                MqttClient.Connection.Subscribe(wildcard, qos);
+                _active.Add(wildcard);
+                if (MqttClient.DebugMessages)
+                    Debug.Log($"[MqttAutoSubscriber] SUB {wildcard} (QoS {qos})");
             }
+        }
+
+        private void UnsubscribeAllFor(string root)
+        {
+            if (MqttClient?.Connection == null) return;
+            root = root?.Trim().Trim('/');
+
+            var toRemove = new List<string>();
+            foreach (var sub in _active)
+            {
+                if (sub.StartsWith(root + "/", StringComparison.OrdinalIgnoreCase))
+                {
+                    MqttClient.Connection.Unsubscribe(sub);
+                    toRemove.Add(sub);
+                    if (MqttClient.DebugMessages)
+                        Debug.Log($"[MqttAutoSubscriber] UNSUB {sub}");
+                }
+            }
+            foreach (var s in toRemove) _active.Remove(s);
         }
     }
 }

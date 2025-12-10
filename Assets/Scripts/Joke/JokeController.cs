@@ -7,116 +7,163 @@ using System.Collections;
 
 public class ScrollingJokeController : MonoBehaviour, IObserver
 {
-   [SerializeField] private Text jokeText; // Text-UI für den Witz
-    private MsgHandler msgHandler;
+    [Header("UI")]
+    [SerializeField] private Text jokeText;   // Text-UI für Joke / Message
+
+    [Header("MQTT / MsgHandler")]
+    [SerializeField] private MsgHandler msgHandler;
+
+    [Header("Topic-Konfiguration")]
+    [Tooltip("Topic-Gruppe, z.B. GAMING (wird über TopicNamespace an den Pfad gehängt).")]
+    [SerializeField] private string group = "GAMING";
+
+    [Tooltip("Topic-Key relativ zur Gruppe, z.B. FEATURE/JOKE/DATA oder FEATURE/FACT/DATA.")]
+    [SerializeField] private string topicKey = "FEATURE/JOKE/DATA";
+
+    [Header("JSON-Konfiguration")]
+    [Tooltip("Name des Feldes im JSON, z.B. 'joke', 'text' oder 'message'.")]
+    [SerializeField] private string jsonFieldName = "joke";
+
+    [Header("Scrolling")]
+    [SerializeField] private float scrollSpeed = 100f; // Pixel pro Sekunde
 
     private Coroutine scrollingTextCoroutine;
 
-    private void Start()
+    private string Topic() => TopicNamespace.TopicFor(group, topicKey);
+
+    // ----------------------------------------------------
+    // Lifecycle
+    // ----------------------------------------------------
+    private void Awake()
     {
-        // Hole den MsgHandler und registriere Observer
-        msgHandler = FindObjectOfType<MsgHandler>();
-        if (msgHandler != null)
+        if (!msgHandler)
+            msgHandler = FindObjectOfType<MsgHandler>();
+
+        if (!msgHandler)
         {
-            msgHandler.RegisterObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/FEATURE/JOKE/DATA", this);
-            Debug.Log("Observer registered for JOKE/DATA topic.");
+            Debug.LogError("[ScrollingJokeController] MsgHandler not found in scene!");
+        }
+
+        if (!jokeText)
+        {
+            Debug.LogError("[ScrollingJokeController] jokeText is not assigned in the inspector!");
         }
         else
         {
-            Debug.LogError("MsgHandler not found in the scene!");
-        }
-
-        // Textfeld zunächst leeren
-        if (jokeText != null)
-        {
-            jokeText.text = "";
-            Debug.Log("Initialized jokeText.");
-        }
-        else
-        {
-            Debug.LogError("jokeText is not assigned in the inspector!");
+            jokeText.text = string.Empty;
         }
     }
 
-    private void OnDestroy()
+    private void OnEnable()
     {
         if (msgHandler != null)
         {
-            msgHandler.RemoveObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/FEATURE/JOKE/DATA", this);
-            Debug.Log("Observer removed for JOKE/DATA topic.");
+            msgHandler.RegisterObserver(Topic(), this);
+            Debug.Log($"[ScrollingJokeController] Observer registered for topic '{Topic()}'.");
         }
     }
 
+    private void OnDisable()
+    {
+        if (msgHandler != null)
+        {
+            msgHandler.RemoveObserver(Topic(), this);
+            Debug.Log($"[ScrollingJokeController] Observer removed for topic '{Topic()}'.");
+        }
+    }
+
+    // ----------------------------------------------------
+    // IObserver
+    // ----------------------------------------------------
     public void OnNotify(string eventType, object data)
     {
-        Debug.Log($"OnNotify called with eventType: {eventType}");
+        if (eventType != Topic())
+            return;
 
-        if (eventType == "MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/FEATURE/JOKE/DATA")
+        if (data is not string jsonString)
         {
-            if (data is string jsonString)
+            Debug.LogError("[ScrollingJokeController] Received data is not a JSON string!");
+            return;
+        }
+
+        try
+        {
+            JObject json = JObject.Parse(jsonString);
+
+            // 1. primär konfigurierbares Feld
+            string text = null;
+            if (!string.IsNullOrEmpty(jsonFieldName))
+                text = json[jsonFieldName]?.ToString();
+
+            // 2. Fallbacks, falls das Feld anders heißt
+            if (string.IsNullOrEmpty(text))
+                text = json["joke"]?.ToString()
+                    ?? json["text"]?.ToString()
+                    ?? json["message"]?.ToString();
+
+            if (!string.IsNullOrEmpty(text))
             {
-                Debug.Log($"Received JSON string: {jsonString}");
-
-                try
-                {
-                    JObject json = JObject.Parse(jsonString);
-                    string joke = json["joke"]?.ToString();
-
-                    if (!string.IsNullOrEmpty(joke))
-                    {
-                        Debug.Log($"Parsed joke: {joke}");
-                        ShowJoke(joke);
-                    }
-                    else
-                    {
-                        Debug.LogWarning("Parsed joke is null or empty.");
-                    }
-                }
-                catch (System.Exception ex)
-                {
-                    Debug.LogError($"Error parsing joke data: {ex.Message}");
-                }
+                ShowJoke(text);
             }
             else
             {
-                Debug.LogError("Received data is not a valid JSON string!");
+                Debug.LogWarning("[ScrollingJokeController] Parsed text is null or empty.");
             }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[ScrollingJokeController] Error parsing JSON: {ex}");
         }
     }
 
-    private void ShowJoke(string joke)
+    // ----------------------------------------------------
+    // UI / Scrolling
+    // ----------------------------------------------------
+    private void ShowJoke(string text)
     {
-        Debug.Log("ShowJoke called.");
+        if (!jokeText)
+            return;
 
-        // Stoppe den aktuellen Scroll-Effekt, falls einer läuft
+        // laufendes Scrolling stoppen
         if (scrollingTextCoroutine != null)
         {
             StopCoroutine(scrollingTextCoroutine);
+            scrollingTextCoroutine = null;
         }
 
-        // Starte einen neuen Scroll-Effekt
-        Debug.Log("Starting new scrolling coroutine.");
-        scrollingTextCoroutine = StartCoroutine(ScrollJokeText(joke));
+        // neuen Scroll-Effekt starten
+        scrollingTextCoroutine = StartCoroutine(ScrollJokeText(text));
     }
 
-    private IEnumerator ScrollJokeText(string joke)
+    private IEnumerator ScrollJokeText(string text)
     {
-        // Text-Scrolling vorbereiten
         RectTransform rt = jokeText.rectTransform;
-        float scrollSpeed = 100f; // Pixels per second
-        float textWidth = jokeText.preferredWidth; // Vollständige Textbreite
-        float containerWidth = rt.parent.GetComponent<RectTransform>().rect.width;
+        if (!rt || rt.parent == null)
+            yield break;
 
-        // Text in das Textfeld setzen
-        jokeText.text = joke;
+        // Text setzen und preferredWidth ermitteln
+        jokeText.text = text;
+        LayoutRebuilder.ForceRebuildLayoutImmediate(rt);
 
-        // Passe die Breite des RectTransforms an den Text an
+        float textWidth = jokeText.preferredWidth;
+        RectTransform containerRt = rt.parent.GetComponent<RectTransform>();
+        float containerWidth = containerRt ? containerRt.rect.width : textWidth;
+
+        // Wenn Text kürzer als Container ist: einfach in der Mitte anzeigen, kein Scrolling
+        if (textWidth <= containerWidth)
+        {
+            // Breite wieder normalisieren
+            rt.sizeDelta = new Vector2(containerWidth, rt.sizeDelta.y);
+            rt.anchoredPosition = new Vector2(0f, rt.anchoredPosition.y);
+            yield break;
+        }
+
+        // Breite an Text anpassen
         rt.sizeDelta = new Vector2(textWidth, rt.sizeDelta.y);
 
-        // Setze den Text zunächst außerhalb des sichtbaren Bereichs
+        // Start- und Endposition (rechts rein, links raus)
         Vector2 startPosition = new Vector2(containerWidth, rt.anchoredPosition.y);
         Vector2 endPosition = new Vector2(-textWidth, rt.anchoredPosition.y);
-
         rt.anchoredPosition = startPosition;
 
         while (true)
@@ -125,7 +172,7 @@ public class ScrollingJokeController : MonoBehaviour, IObserver
 
             if (rt.anchoredPosition.x <= endPosition.x)
             {
-                rt.anchoredPosition = startPosition; // Zurück zur Startposition
+                rt.anchoredPosition = startPosition;
             }
 
             yield return null;

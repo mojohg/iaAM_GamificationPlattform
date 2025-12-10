@@ -1,262 +1,477 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
-using UnityEngine;
-using UnityEngine.UI;
-using Newtonsoft.Json.Linq;
 using System.IO;
 using System.Linq;
+using Newtonsoft.Json.Linq;
+using UnityEngine;
+using UnityEngine.UI;
 using Rocworks.Mqtt;
-using System;
 
+[RequireComponent(typeof(RectTransform))]
 public class AvatarController : MonoBehaviour, IObserver
 {
-    [SerializeField] private Image avatarImage;    // Display avatar image
-    [SerializeField] private Text costText;        // Display cost of the avatar
-    [SerializeField] private GameObject lockIcon;  // Lock icon if avatar is locked
-    [SerializeField] private Button nextButton;    // Navigate to next avatar
-    [SerializeField] private Button previousButton;// Navigate to previous avatar
-    [SerializeField] private Button unlockButton;  // Button to unlock avatar
-    [SerializeField] private GameObject shadeOverlay; // Dim avatar if locked
-    [SerializeField] private GameObject lockedButton;  // Button shown when locked
+    [Header("UI")]
+    [SerializeField] private Image avatarImage;
+    [SerializeField] private Text costText;
+    [SerializeField] private GameObject lockIcon;
+    [SerializeField] private Button nextButton;
+    [SerializeField] private Button previousButton;
+    [SerializeField] private GameObject shadeOverlay;
+    [SerializeField] private GameObject purchaseButton;
+    [SerializeField] private Text requiredScoreText;
+    [SerializeField] private Text requiredLevelText;
 
-    private MsgHandler msgHandler;
-    private List<AvatarInfo> avatars = new List<AvatarInfo>(); // List of all avatars
-    private int currentAvatarIndex = 0;    // Current avatar index
-    private Sprite defaultSprite;
-    private int userCoins;
-    private Coroutine publishCoroutine;
+    [SerializeField] private Text strengthText;
+    [SerializeField] private Text healthText;
 
-    private void Start()
+    [Header("MQTT / MsgHandler")]
+    [Tooltip("Wird automatisch gefunden, wenn leer.")]
+    public MsgHandler msgHandler;
+
+    [Header("Topic Namespace (flexibel)")]
+    [Tooltip("Hauptgruppe für Game-Themen, z. B. 'GAMING'.")]
+    public string groupGame = "GAMING";
+    [Tooltip("Entity-Key für Avatare, z. B. 'AVATAR'.")]
+    public string keyAvatar = "AVATAR";
+    [Tooltip("Userdaten-Gruppe, z. B. 'USERDATA'.")]
+    public string groupUserData = "USERDATA";
+    [Tooltip("Coins-Key innerhalb USERDATA.")]
+    public string keyCoins = "COINS";
+    [Tooltip("Avatars-Key innerhalb USERDATA.")]
+    public string keyUserAvatars = "AVATARS";
+
+    [Header("Assets")]
+    [Tooltip("Relativer Ordner unter StreamingAssets.")]
+    public string avatarsFolder = "Avatars/v1_0";
+    [Tooltip("Fallback-Sprite, falls Datei fehlt.")]
+    public Sprite defaultSprite;
+
+    // ---- runtime state ----
+    private readonly List<AvatarInfo> _avatars = new();
+    private int _currentIndex = 0;
+    private float _userCoins;
+    private Coroutine _publishCoroutine;
+
+    // ---- constants for subkeys ----
+    private const string SUB_PURCHASE = "PURCHASE";
+    private const string SUB_RESPONSE = "RESPONSE";
+    private const string SUB_ACTIVE   = "ACTIVE";
+
+    // --------------- Unity lifecycle ---------------
+    void Awake()
     {
-        msgHandler = FindObjectOfType<MsgHandler>();
-        if (msgHandler != null)
-        {
-            msgHandler.RegisterObserver("UserDataUpdate/Avatars", this);
-            msgHandler.RegisterObserver("UserDataUpdate/Coins", this);
-        }
-
-        LoadAvatars();  // Load avatars from disk
-        UpdateUI();     // Update the UI with the first avatar
+        if (!msgHandler) msgHandler = FindObjectOfType<MsgHandler>();
+        WireButtons();
     }
 
-    private void OnDestroy()
+    void Start()
     {
-        if (msgHandler != null)
+        RegisterObservers();
+        LoadAvatarsFromDisk();
+        RefreshUI();
+    }
+
+    void OnDestroy()
+    {
+        UnregisterObservers();
+    }
+
+    // --------------- Button wiring ---------------
+    void WireButtons()
+    {
+        if (nextButton)     nextButton.onClick.AddListener(NextAvatar);
+        if (previousButton) previousButton.onClick.AddListener(PreviousAvatar);
+        if (purchaseButton)
         {
-            msgHandler.RemoveObserver("UserDataUpdate/Avatars", this);
-            msgHandler.RemoveObserver("UserDataUpdate/Coins", this);
+            var btn = purchaseButton.GetComponent<Button>();
+            if (btn != null) btn.onClick.AddListener(PurchaseCurrentAvatar);
         }
     }
 
- public void OnNotify(string eventType, object data)
-{
-    if (eventType == "UserDataUpdate/Coins")
+    // --------------- Topic building ---------------
+    string TopicPurchase()         => TopicNamespace.TopicFor(groupGame, keyAvatar + "/" + SUB_PURCHASE);
+    string TopicPurchaseResponse() => TopicNamespace.TopicFor(groupGame, keyAvatar + "/" + SUB_RESPONSE);
+    string TopicActive()           => TopicNamespace.TopicFor(groupGame, keyAvatar + "/" + SUB_ACTIVE);
+    string TopicUserAvatars()      => TopicNamespace.TopicFor(groupUserData, keyUserAvatars);
+    string TopicUserCoins()        => TopicNamespace.TopicFor(groupUserData, keyCoins);
+
+    void RegisterObservers()
     {
-        if (data is string jsonString)
+        if (msgHandler == null) return;
+
+        msgHandler.RegisterObserver(TopicUserCoins(), this);
+        msgHandler.RegisterObserver(TopicPurchaseResponse(), this);
+        msgHandler.RegisterObserver(TopicUserAvatars(), this);
+    }
+
+    void UnregisterObservers()
+    {
+        if (msgHandler == null) return;
+
+        msgHandler.RemoveObserver(TopicUserCoins(), this);
+        msgHandler.RemoveObserver(TopicPurchaseResponse(), this);
+        msgHandler.RemoveObserver(TopicUserAvatars(), this);
+    }
+
+    // --------------- IObserver ---------------
+    public void OnNotify(string eventType, object data)
+    {
+        try
         {
-            try
+            if (string.IsNullOrEmpty(eventType)) return;
+
+            // Coins
+            if (eventType == TopicUserCoins())
             {
-                JObject json = JObject.Parse(jsonString);
-                userCoins = json["coins"]?.ToObject<int>() ?? 0; // Extrahiere den Coins-Wert
-                UpdateUI();  // Coins geändert, aktualisiere die UI
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"Error parsing coins data: {ex.Message}");
-            }
-        }
-    }
-    else if (eventType == "UserDataUpdate/Avatars")
-    {
-        string jsonString = data as string;
-        if (jsonString != null)
-        {
-            LoadAvatarStatusFromJson(jsonString);
-            UpdateUI();
-        }
-    }
-}
-
-    private void LoadAvatars()
-    {
-        string avatarsPath = Path.Combine(Application.streamingAssetsPath, "Avatars");
-        if (Directory.Exists(avatarsPath))
-        {
-            string[] costFolders = Directory.GetDirectories(avatarsPath);
-            foreach (var folder in costFolders)
-            {
-                int cost;
-                string folderName = Path.GetFileName(folder);
-                if (folderName.StartsWith("Cost_") && int.TryParse(folderName.Substring(5), out cost))
+                if (float.TryParse(data?.ToString(), out var coinFloat))
                 {
-                    string[] files = Directory.GetFiles(folder);
-                    int index = 1;
-                    foreach (var file in files)
-                    {
-                        string extension = Path.GetExtension(file).ToLower();
-                        if (IsValidImageFile(extension))
-                        {
-                            string spriteName = $"{cost}_{index}";
-                            AvatarInfo avatarInfo = new AvatarInfo
-                            {
-                                cost = cost,
-                                sprite = LoadAvatarSprite(file),
-                                name = spriteName
-                            };
-                            avatars.Add(avatarInfo);
-                            index++;
-                        }
-                    }
+                    _userCoins = coinFloat;
+                    RefreshUI();
                 }
+                else
+                {
+                    Debug.LogWarning($"[AvatarController] Could not parse coins from: {data}");
+                }
+                return;
+            }
+
+            // Avatars (status + active)
+            if (eventType == TopicUserAvatars())
+            {
+                var json = data as string;
+                if (!string.IsNullOrEmpty(json))
+                {
+                    ApplyAvatarStatusFromJson(json, mayContainActiveFlag: true);
+                    RefreshUI();
+                }
+                return;
+            }
+
+            // Purchase response
+            if (eventType == TopicPurchaseResponse())
+            {
+                var json = data as string;
+                if (!string.IsNullOrEmpty(json))
+                {
+                    HandlePurchaseResponse(json);
+                }
+                return;
             }
         }
-        else
+        catch (Exception ex)
         {
-            Debug.LogError($"Avatars directory not found at: {avatarsPath}");
+            Debug.LogError($"[AvatarController] OnNotify error for '{eventType}': {ex}");
         }
     }
 
-    private bool IsValidImageFile(string extension)
+    // --------------- Disk load ---------------
+    void LoadAvatarsFromDisk()
     {
-        return extension == ".png" || extension == ".jpg" || extension == ".jpeg" || extension == ".sprite";
+        _avatars.Clear();
+
+        string path = Path.Combine(Application.streamingAssetsPath, avatarsFolder);
+        if (!Directory.Exists(path))
+        {
+            Debug.LogError($"[AvatarController] Avatars directory not found: {path}");
+            return;
+        }
+
+        foreach (var file in Directory.GetFiles(path))
+        {
+            var ext = Path.GetExtension(file)?.ToLowerInvariant();
+            if (ext is ".png" or ".jpg" or ".jpeg" or ".sprite")
+            {
+                var name = Path.GetFileNameWithoutExtension(file);
+                _avatars.Add(new AvatarInfo
+                {
+                    name = name,
+                    sprite = LoadSprite(file),
+                    isUnlocked = false,
+                    isPurchased = false,
+                    cost = 0,
+                    required_level = 0,
+                    required_score = 0,
+                    strength = 0,
+                    health = 0
+                });
+            }
+        }
+
+        if (_avatars.Count == 0)
+            Debug.LogWarning($"[AvatarController] No avatar files found in: {path}");
     }
 
-    private Sprite LoadAvatarSprite(string path)
+    Sprite LoadSprite(string filePath)
     {
-        if (!File.Exists(path))
+        try
+        {
+            if (!File.Exists(filePath)) return defaultSprite;
+            var bytes = File.ReadAllBytes(filePath);
+            var tex = new Texture2D(2, 2);
+            if (!tex.LoadImage(bytes)) return defaultSprite;
+            return Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height),
+                                 new Vector2(0.5f, 0.5f));
+        }
+        catch
         {
             return defaultSprite;
         }
-
-        byte[] fileData = File.ReadAllBytes(path);
-        Texture2D texture = new Texture2D(2, 2);
-        texture.LoadImage(fileData);
-        return Sprite.Create(texture, new Rect(0, 0, texture.width, texture.height), new Vector2(0.5f, 0.5f));
     }
 
-    private void LoadAvatarStatusFromJson(string jsonString)
+    // --------------- JSON parsing ---------------
+    void ApplyAvatarStatusFromJson(string json, bool mayContainActiveFlag)
     {
-        JArray responseArray = JArray.Parse(jsonString);
+        // Erlaubt sowohl Array-Root als auch Objekt { items:[.], active_avatar:"." }
+        JToken root = JToken.Parse(json);
 
-        foreach (var item in responseArray)
+        IEnumerable<JToken> items = Enumerable.Empty<JToken>();
+        string active = null;
+
+        if (root.Type == JTokenType.Array)
         {
-            string avatarName = item["name"].ToString();
-            bool isUnlocked = (bool)item["is_unlocked"];
-            bool isPurchased = (bool)item["is_purchased"];
-
-            var avatar = avatars.FirstOrDefault(a => a.name == avatarName);
-            if (avatar != null)
-            {
-                avatar.isUnlocked = isUnlocked;
-                avatar.isPurchased = isPurchased;
-            }
+            items = root.Children();
+            if (mayContainActiveFlag)
+                active = root.FirstOrDefault()?["active_avatar"]?.ToString();
+        }
+        else if (root.Type == JTokenType.Object)
+        {
+            var ro = (JObject)root;
+            if (ro["items"] is JArray arr) items = arr.Children();
+            if (mayContainActiveFlag && ro["active_avatar"] != null)
+                active = ro["active_avatar"]?.ToString();
         }
 
-        // Set the active avatar after processing
-        string activeAvatar = responseArray.FirstOrDefault()?["active_avatar"]?.ToString();
-        SetActiveAvatar(activeAvatar);
-        UpdateUI();
+        foreach (var it in items)
+        {
+            string avName = it["name"]?.ToString();
+            if (string.IsNullOrEmpty(avName)) continue;
+
+            var av = _avatars.FirstOrDefault(a => a.name == avName);
+            if (av == null)
+            {
+                Debug.LogWarning($"[AvatarController] Avatar '{avName}' not found in disk list.");
+                continue;
+            }
+
+            av.isUnlocked      = it["is_unlocked"]?.Value<bool>()     ?? av.isUnlocked;
+            av.isPurchased     = it["is_purchased"]?.Value<bool>()    ?? av.isPurchased;
+            av.cost            = it["required_coins"]?.Value<int>()   ?? av.cost;
+            av.required_score  = it["required_score"]?.Value<int>()   ?? av.required_score;
+            av.required_level  = it["required_level"]?.Value<int>()   ?? av.required_level;
+            av.strength        = it["strength"]?.Value<int>()         ?? av.strength;
+            av.health          = it["health"]?.Value<int>()           ?? av.health;
+        }
+
+        if (!string.IsNullOrEmpty(active))
+            SetActiveAvatar(active);
     }
 
-    private void SetActiveAvatar(string activeAvatar)
+    void HandlePurchaseResponse(string json)
     {
-        var activeAv = avatars.FirstOrDefault(a => a.name == activeAvatar);
-        if (activeAv != null)
+        var jo = JObject.Parse(json);
+        string status = jo["status"]?.ToString();
+        string name   = jo["avatar"]?.ToString();
+
+        var av = _avatars.FirstOrDefault(a => a.name == name);
+        if (av == null)
         {
-            currentAvatarIndex = avatars.IndexOf(activeAv);
+            Debug.LogWarning($"[AvatarController] Purchase response for unknown avatar '{name}'.");
+            return;
+        }
+
+        if (status == "success")
+        {
+            av.isPurchased = true;
+
+            // optional: remaining_coins updaten, falls Backend es mitsendet
+            if (float.TryParse(jo["remaining_coins"]?.ToString(), out var rest))
+                _userCoins = rest;
+
+            costTextSafe("Unlocked");
+            RefreshUI();
         }
         else
         {
-            currentAvatarIndex = avatars.IndexOf(avatars.FirstOrDefault(a => a.name == "10_1"));
+            string err = jo["error"]?.ToString() ?? "Unknown error";
+            costTextSafe("Purchase failed");
+            Debug.LogWarning($"[AvatarController] Purchase failed for '{name}': {err}");
         }
     }
 
+    // --------------- Active selection + publish ---------------
     public void NextAvatar()
     {
-        currentAvatarIndex = (currentAvatarIndex + 1) % avatars.Count;
-        UpdateUI();
-        Debug.Log($"Switched to next avatar: {avatars[currentAvatarIndex].sprite.name}");
-         // Restart the publish coroutine if avatar is purchased
-        RestartPublishCoroutine();
+        if (_avatars.Count == 0) return;
+        _currentIndex = (_currentIndex + 1) % _avatars.Count;
+        RefreshUI();
+        RestartPublishIfPurchasedCurrent();
     }
 
     public void PreviousAvatar()
     {
-        currentAvatarIndex = (currentAvatarIndex - 1 + avatars.Count) % avatars.Count;
-        UpdateUI();
-        Debug.Log($"Switched to previous avatar: {avatars[currentAvatarIndex].sprite.name}");
-         // Restart the publish coroutine if avatar is purchased
-        RestartPublishCoroutine();
+        if (_avatars.Count == 0) return;
+        _currentIndex = (_currentIndex - 1 + _avatars.Count) % _avatars.Count;
+        RefreshUI();
+        RestartPublishIfPurchasedCurrent();
     }
 
-    private void UpdateUI()
+    void SetActiveAvatar(string name)
     {
-        AvatarInfo currentAvatar = avatars[currentAvatarIndex];
-        avatarImage.sprite = currentAvatar.sprite != null ? currentAvatar.sprite : defaultSprite;
+        var found = _avatars.FindIndex(a => a.name == name);
+        // Fallback: nimm den ersten Avatar (z. B. "10_1"), falls nicht gefunden
+        _currentIndex = (found >= 0)
+            ? found
+            : Mathf.Max(0, _avatars.FindIndex(a => a.name == "10_1"));
+    }
 
-        if (!currentAvatar.isUnlocked)
+    void RestartPublishIfPurchasedCurrent()
+    {
+        var cur = Current();
+        if (cur == null) return;
+        if (cur.isUnlocked && cur.isPurchased)
         {
-            lockIcon.SetActive(true);
-            unlockButton.gameObject.SetActive(false);
-            shadeOverlay.SetActive(true);
-            lockedButton.SetActive(true);
+            if (_publishCoroutine != null) StopCoroutine(_publishCoroutine);
+            _publishCoroutine = StartCoroutine(PublishActiveAfterDelay(cur, 3f));
         }
-        else if (currentAvatar.isUnlocked && !currentAvatar.isPurchased)
+    }
+
+    IEnumerator PublishActiveAfterDelay(AvatarInfo av, float delaySeconds)
+    {
+        yield return new WaitForSeconds(delaySeconds);
+
+        var jo = new JObject {
+            ["avatar"] = av.name,
+            ["mqtt"]   = true
+        };
+
+        try { msgHandler?.NotifyObservers(TopicActive(), jo); }
+        catch (Exception ex) { Debug.LogWarning($"[AvatarController] Publish active failed: {ex.Message}"); }
+    }
+
+    // --------------- Purchase ---------------
+    public void PurchaseCurrentAvatar()
+    {
+        var cur = Current();
+        if (cur == null) return;
+
+        // Nur, wenn vom Backend freigeschaltet und noch nicht gekauft
+        if (!cur.isUnlocked || cur.isPurchased) return;
+
+        var jo = new JObject {
+            ["avatar"] = cur.name,
+            ["mqtt"]   = true
+        };
+
+        try
         {
-            lockIcon.SetActive(false);
-            unlockButton.gameObject.SetActive(true);
-            unlockButton.interactable = userCoins >= currentAvatar.cost;
-            shadeOverlay.SetActive(true);
+            msgHandler?.NotifyObservers(TopicPurchase(), jo);
+            costTextSafe("Processing purchase...");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[AvatarController] Purchase publish failed: {ex.Message}");
+        }
+    }
+
+    // --------------- UI ---------------
+    void RefreshUI()
+    {
+        if (_avatars.Count == 0)
+        {
+            ShowNoAvatars();
+            return;
+        }
+
+        var cur = Current();
+        if (avatarImage) avatarImage.sprite = cur?.sprite ?? defaultSprite;
+
+        if (cur == null)
+        {
+            ShowNoAvatars();
+            return;
+        }
+        strengthTextSafe($"Strength: {cur.strength}");
+        healthTextSafe($"Health: {cur.health}");
+        if (!cur.isUnlocked)
+        {
+            SetLock(true);
+            SetShade(true);
+            SetPurchaseButton(false, interactable:false);
+            costTextSafe("Locked");
+            requiredScoreTextSafe($"Required Score: {cur.required_score}");
+            requiredLevelTextSafe($"Required Level: {cur.required_level}");
+        }
+        else if (!cur.isPurchased)
+        {
+            SetLock(false);
+            SetShade(true);
+            SetPurchaseButton(true, interactable:true); // Coins-Check macht Backend
+            costTextSafe($"Cost: {cur.cost}");
+            requiredScoreTextSafe("");
+            requiredLevelTextSafe("");
         }
         else
         {
-            lockIcon.SetActive(false);
-            unlockButton.gameObject.SetActive(false);
-            shadeOverlay.SetActive(false);
-            lockedButton.SetActive(false);
-        }
-
-        costText.text = currentAvatar.isPurchased ? "Unlocked" : $"Cost: {currentAvatar.cost}";
-    }
-
- private void RestartPublishCoroutine()
-    {
-        AvatarInfo currentAvatar = avatars[currentAvatarIndex];
-        
-        // Only start the coroutine if the avatar is unlocked and purchased
-        if (currentAvatar.isUnlocked && currentAvatar.isPurchased)
-        {
-            if (publishCoroutine != null)
-            {
-                StopCoroutine(publishCoroutine);
-            }
-            publishCoroutine = StartCoroutine(PublishAvatarAfterDelay(currentAvatar));
+            SetLock(false);
+            SetShade(false);
+            SetPurchaseButton(false, interactable:false);
+            costTextSafe("Unlocked");
+            requiredScoreTextSafe("");
+            requiredLevelTextSafe("");
         }
     }
 
-    // Coroutine to wait for 2 seconds and then publish the avatar info via MQTT
-    private IEnumerator PublishAvatarAfterDelay(AvatarInfo avatar)
+    void ShowNoAvatars()
     {
-        yield return new WaitForSeconds(2f);
-
-        // Publish avatar info via MQTT
-        JObject avatarMessage = new JObject
-        {
-            {"avatar", avatar.name},
-            {"mqtt", true}
-        };
-        if (msgHandler != null)
-        {
-            msgHandler.NotifyObservers("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/AVATAR/ACTIVE", avatarMessage);
-            Debug.Log($"Published avatar: {avatar.name}");
-        }
+        SetLock(true);
+        SetShade(true);
+        SetPurchaseButton(false, interactable:false);
+        costTextSafe("No Avatars Available");
+        requiredScoreTextSafe("");
+        requiredLevelTextSafe("");
+        strengthTextSafe("");
+        healthTextSafe("");
     }
-    private class AvatarInfo
+
+    // --------------- helpers ---------------
+    AvatarInfo Current() =>
+        (_currentIndex >= 0 && _currentIndex < _avatars.Count) ? _avatars[_currentIndex] : null;
+
+    void SetLock(bool v)        { if (lockIcon)     lockIcon.SetActive(v); }
+    void SetShade(bool v)       { if (shadeOverlay) shadeOverlay.SetActive(v); }
+    void SetPurchaseButton(bool active, bool interactable)
     {
+        if (!purchaseButton) return;
+        purchaseButton.SetActive(active);
+        var btn = purchaseButton.GetComponent<Button>();
+        if (btn) btn.interactable = interactable;
+    }
+
+    void costTextSafe(string s)          { if (costText) costText.text = s; }
+    void requiredScoreTextSafe(string s) { if (requiredScoreText) requiredScoreText.text = s; }
+    void requiredLevelTextSafe(string s) { if (requiredLevelText) requiredLevelText.text = s; }
+    void strengthTextSafe(string s)      { if (strengthText) strengthText.text = s; }
+    void healthTextSafe(string s)        { if (healthText) healthText.text = s; }
+    [ContextMenu("Reset All (Locked)")]
+    void ResetAllAvatars()
+    {
+        foreach (var a in _avatars) { a.isUnlocked = false; a.isPurchased = false; }
+        _currentIndex = 0;
+        RefreshUI();
+    }
+
+    // --------------- model ---------------
+    sealed class AvatarInfo
+    {
+        public string name;
+        public Sprite sprite;
         public int cost;
         public bool isUnlocked;
         public bool isPurchased;
-        public Sprite sprite;
-        public string name;
+        public int required_score;
+        public int required_level;
+        public int strength;
+        public int health;
     }
 }

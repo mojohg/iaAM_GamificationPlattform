@@ -6,77 +6,122 @@ using Rocworks.Mqtt;
 
 public class PrestigeController : MonoBehaviour, IObserver
 {
-    [SerializeField] private GameObject lockIcon;  // Lock icon to indicate Prestige is locked
-    [SerializeField] private Button prestigeButton;    // Prestige button
+    [Header("UI")]
+    [SerializeField] private GameObject lockIcon;      // zeigt: Prestige gesperrt
+    [SerializeField] private Button prestigeButton;    // Button zum Auslösen
+
+    [Header("MQTT Topics")]
+    [Tooltip("Group, z.B. GAMING")]
+    [SerializeField] private string group = "GAMING";
+
+    [Tooltip("Kategorie für den Prestige-Status (Backend -> Unity)")]
+    [SerializeField] private string stateCategory = "PRESTIGE_STATE";
+
+    [Tooltip("Kategorie für Aktivierungs-Events (Unity -> Backend)")]
+    [SerializeField] private string activatedCategory = "PRESTIGE_ACTIVATED";
+
+    [Header("Behavior")]
+    [Tooltip("Haltezeit in Sekunden, um Prestige zu aktivieren")]
+    [SerializeField] private float holdTimeSeconds = 3f;
 
     private MsgHandler msgHandler;
     private Coroutine buttonHoldCoroutine;
 
-    private void Start()
-    {
-        msgHandler = FindObjectOfType<MsgHandler>();
-        if (msgHandler != null)
-        {
-            msgHandler.RegisterObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/PRESTIGE/STATE", this);
-        }
+    private string _topicState;
+    private string _topicActivated;
 
-        UpdateUI(false);  // Initially disable the button
+    private void Awake()
+    {
+        if (!prestigeButton)
+            prestigeButton = GetComponent<Button>();
+
+        if (!msgHandler)
+            msgHandler = FindObjectOfType<MsgHandler>();
+
+        // UI initial: gesperrt
+        UpdateUI(false);
     }
 
-    private void OnDestroy()
+    private void OnEnable()
     {
-        if (msgHandler != null)
+        if (msgHandler == null)
         {
-            msgHandler.RemoveObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/PRESTIGE/STATE", this);
+            Debug.LogError("[PrestigeController] MsgHandler not found in scene.");
+            return;
         }
+
+        _topicState     = TopicNamespace.TopicFor(group, stateCategory);
+        _topicActivated = TopicNamespace.TopicFor(group, activatedCategory);
+
+        msgHandler.RegisterObserver(_topicState, this);
+        TopicNamespace.OnRootChanged += HandleRootChanged;
+
+        Debug.Log($"[PrestigeController] Listening on state topic: {_topicState}");
     }
 
+    private void OnDisable()
+    {
+        if (msgHandler != null && !string.IsNullOrEmpty(_topicState))
+            msgHandler.RemoveObserver(_topicState, this);
+
+        TopicNamespace.OnRootChanged -= HandleRootChanged;
+
+        CancelHold();
+    }
+
+    // --- IObserver ---
     public void OnNotify(string eventType, object data)
     {
-        if (eventType == "MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/PRESTIGE/STATE")
+        if (eventType != _topicState) return;
+        if (data is not string jsonString || string.IsNullOrWhiteSpace(jsonString)) return;
+
+        try
         {
-            if (data is string jsonString)
-            {
-                try
-                {
-                    JObject json = JObject.Parse(jsonString);
-                    bool prestigeAvailable = json["Prestige"]?.ToObject<bool>() ?? false;
-                    UpdateUI(prestigeAvailable);
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogError($"Error parsing Prestige data: {ex.Message}");
-                }
-            }
+            var json = JObject.Parse(jsonString);
+
+            // Wir sind tolerant bei den Feldnamen
+            bool prestigeAvailable =
+                json["Prestige"]?.ToObject<bool?>()
+                ?? json["prestige"]?.ToObject<bool?>()
+                ?? json["available"]?.ToObject<bool?>()
+                ?? json["prestige_available"]?.ToObject<bool?>()
+                ?? false;
+
+            UpdateUI(prestigeAvailable);
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[PrestigeController] Error parsing prestige state: {ex.Message}");
         }
     }
 
     private void UpdateUI(bool prestigeAvailable)
     {
-        if (prestigeAvailable)
-        {
-            lockIcon.SetActive(false);  // Hide the lock icon
-            prestigeButton.interactable = true;  // Enable the button
-        }
-        else
-        {
-            lockIcon.SetActive(true);  // Show the lock icon
-            prestigeButton.interactable = false;  // Disable the button
-        }
+        if (lockIcon) lockIcon.SetActive(!prestigeAvailable);
+
+        if (prestigeButton)
+            prestigeButton.interactable = prestigeAvailable;
+
+        // falls während des Haltens wieder gelockt wird -> abbrechen
+        if (!prestigeAvailable)
+            CancelHold();
     }
 
+    // --- Button-Ereignisse (per Inspector an Pointer Down / Up hängen) ---
     public void OnButtonPress()
     {
-        // Start the hold coroutine when the button is pressed
-        if (prestigeButton.interactable)
-        {
-            buttonHoldCoroutine = StartCoroutine(HoldButtonCoroutine());
-        }
+        if (prestigeButton == null || !prestigeButton.interactable) return;
+        CancelHold(); // Sicherheit
+        buttonHoldCoroutine = StartCoroutine(HoldButtonCoroutine());
     }
 
     public void OnButtonRelease()
     {
-        // Stop the coroutine if the button is released early
+        CancelHold();
+    }
+
+    private void CancelHold()
+    {
         if (buttonHoldCoroutine != null)
         {
             StopCoroutine(buttonHoldCoroutine);
@@ -86,29 +131,41 @@ public class PrestigeController : MonoBehaviour, IObserver
 
     private System.Collections.IEnumerator HoldButtonCoroutine()
     {
-        float holdTime = 3f;  // Time required to hold the button
         float elapsedTime = 0f;
 
-        while (elapsedTime < holdTime)
+        while (elapsedTime < holdTimeSeconds)
         {
             elapsedTime += Time.deltaTime;
             yield return null;
         }
 
-        // Button was held for the required time
-        SendPrestigeMQTTMessage();
+        // Button wurde lange genug gehalten -> Event ans Backend
+        SendPrestigeActivatedMessage();
     }
 
-    private void SendPrestigeMQTTMessage()
+    private void SendPrestigeActivatedMessage()
     {
-        // Create the Prestige MQTT message
-        JObject message = new JObject
+        if (msgHandler == null)
         {
-            {"PrestigeActivated", true},
-            {"mqtt", true}
+            Debug.LogWarning("[PrestigeController] MsgHandler is null, cannot send MQTT message.");
+            return;
+        }
+
+        var message = new JObject
+        {
+            ["PrestigeActivated"] = true,
+            ["mqtt"] = true
         };
 
-        msgHandler.NotifyObservers("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/PRESTIGE/ACTIVATED", message);
-        Debug.Log("Prestige activated message sent via MQTT.");
+        msgHandler.NotifyObservers(_topicActivated, message);
+        Debug.Log($"[PrestigeController] Prestige activated message sent on topic: {_topicActivated}");
+    }
+
+    // Root-Wechsel (z.B. anderes Gerät / Profil)
+    private void HandleRootChanged(string oldRoot, string newRoot)
+    {
+        _topicState     = TopicNamespace.TopicFor(group, stateCategory);
+        _topicActivated = TopicNamespace.TopicFor(group, activatedCategory);
+        Debug.Log($"[PrestigeController] Topics remapped to: state={_topicState}, activated={_topicActivated}");
     }
 }

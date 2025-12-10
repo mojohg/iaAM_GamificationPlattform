@@ -76,15 +76,15 @@ RectTransform:
   m_GameObject: {fileID: 1267971401394190944}
   m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 0.4, y: 0.4, z: 1}
+  m_LocalScale: {x: 0.39999998, y: 0.39999998, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 8803309261825603774}
-  m_Father: {fileID: 6532279742813868202}
+  m_Father: {fileID: 8053000665073708383}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: -897.80005, y: 159}
+  m_AnchoredPosition: {x: -897.80005, y: -48.999985}
   m_SizeDelta: {x: 217.57, y: 198}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!222 &3526928677431669238
@@ -383,7 +383,15 @@ MonoBehaviour:
   progressBar: {fileID: 6163941639245364127}
   difficultyButton: {fileID: 463292450968457085}
   difficultyText: {fileID: 1893567891687282313}
-  levelText: {fileID: 0}
+  startDifficultyIndex: 0
+  successPanel: {fileID: 0}
+  successText: {fileID: 0}
+  failPanel: {fileID: 0}
+  failText: {fileID: 0}
+  overlayDuration: 2
+  overlayFadeDuration: 0.25
+  msgHandler: {fileID: 0}
+  baseTopic: GAMING/CHALLENGE
 --- !u!1 &4351123737067931009
 GameObject:
   m_ObjectHideFlags: 0
@@ -434,6 +442,11 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   progressBar: {fileID: 1710010536098499321}
   levelText: {fileID: 0}
+  msgHandler: {fileID: 0}
+  group: GAMING
+  category: DATA/PROGRESSBAR
+  animationDuration: 2
+  resetDelay: 3
 --- !u!1 &5353504785727588422
 GameObject:
   m_ObjectHideFlags: 0
@@ -768,6 +781,7 @@ RectTransform:
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
+  - {fileID: 7949878230571598264}
   - {fileID: 563066218202298456}
   - {fileID: 3206399569227363537}
   - {fileID: 8670057666940178069}
@@ -1000,7 +1014,6 @@ RectTransform:
   m_Children:
   - {fileID: 6714362876755781534}
   - {fileID: 4833551237702010665}
-  - {fileID: 7949878230571598264}
   - {fileID: 8053000665073708383}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}

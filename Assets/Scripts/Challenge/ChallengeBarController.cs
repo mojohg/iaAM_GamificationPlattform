@@ -1,301 +1,260 @@
+using System;
 using System.Collections;
 using UnityEngine;
 using UnityEngine.UI;
 using Newtonsoft.Json.Linq;
-using System;
 using Rocworks.Mqtt;
 
 public class ChallengeBarController : MonoBehaviour, IObserver
 {
+    [Header("UI - ProgressBar")]
     [SerializeField] private Image progressBar;
+
+    [Header("UI - Difficulty")]
     [SerializeField] private Button difficultyButton;
     [SerializeField] private Text difficultyText;
-    [SerializeField] private Text levelText; // Zeigt das aktuelle Level an
 
-    private readonly string[] difficultyLevels = {
+    [Header("Difficulty Settings")]
+    [SerializeField] private int startDifficultyIndex = 0;
+
+    private readonly string[] difficultyLevels =
+    {
         "Very Easy", "Easy", "Medium", "Hard", "Very Hard", "Extreme", "Insane"
     };
-    private readonly float[] difficultyModifiers = {
-        1.5f, 1.25f, 1.0f, 0.85f, 0.75f, 0.6f, 0.5f
-    };
 
-    private int currentDifficultyIndex = 0; // Standard: "Very easy"
-    private int baseBenchmark;
-    private int adjustedBenchmark;
-    private int currentLevel = 0; // Speichert das aktuelle Level
-    private float elapsedTime = 0f;
-    private bool isPaused = false;
-    private Coroutine progressCoroutine;
-    private MsgHandler msgHandler;
-    private bool completed = false;
-    private bool isActiveChallenge = false; // Neue Challenge darf erst gestartet werden, wenn true
+    [Header("UI - Result Overlays")]
+    [SerializeField] private GameObject successPanel;
+    [SerializeField] private Text successText;
 
+    [SerializeField] private GameObject failPanel;
+    [SerializeField] private Text failText;
 
-    private void Start()
+    [Header("Overlay Animation")]
+    [SerializeField] private float overlayDuration = 2f;
+    [SerializeField] private float overlayFadeDuration = 0.25f;
+
+    [Header("MQTT")]
+    [SerializeField] private MsgHandler msgHandler;
+
+    [Header("Topic Base")]
+    [SerializeField] private string baseTopic = "GAMING/CHALLENGE";
+
+    // Derived Topics
+    private string TopicState   => TopicNamespace.TopicFor(baseTopic + "/STATE");
+    private string TopicResult  => TopicNamespace.TopicFor(baseTopic + "/RESULT");
+    private string TopicControl => TopicNamespace.TopicFor(baseTopic + "/CONTROL");
+
+    // Internal
+    private float benchmarkSeconds = 0f;
+    private bool isRunning = false;
+    private Coroutine progressRoutine;
+    private Coroutine resultRoutine;
+    private int currentDifficultyIndex = 0;
+
+    private void Awake()
     {
-        msgHandler = FindObjectOfType<MsgHandler>();
-        if (msgHandler != null)
-        {
-            // Registriere Observer für Challenge und Level
-            msgHandler.RegisterObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/DATA/CHALLENGE", this);
-            msgHandler.RegisterObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/DATA/PROGRESSBAR", this);
-            msgHandler.RegisterObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/DATA/CHALLENGE/CONTROL", this);
-            msgHandler.RegisterObserver("Challenge/Control", this);
-        }
-        progressBar.fillAmount = 0f;
+        if (!msgHandler)
+            msgHandler = FindObjectOfType<MsgHandler>();
 
-       // difficultyButton.onClick.AddListener(ChangeDifficulty);
+        if (progressBar)
+            progressBar.fillAmount = 0f;
+
+        if (successPanel) successPanel.SetActive(false);
+        if (failPanel) failPanel.SetActive(false);
+
+        currentDifficultyIndex = Mathf.Clamp(startDifficultyIndex, 0, difficultyLevels.Length - 1);
         UpdateDifficultyText();
+
+        if (difficultyButton)
+            difficultyButton.onClick.AddListener(OnDifficultyClicked);
     }
 
-    private void OnDestroy()
+    private void OnEnable()
     {
-        if (msgHandler != null)
-        {
-            msgHandler.RemoveObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/DATA/CHALLENGE", this);
-            msgHandler.RemoveObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/DATA/PROGRESSBAR", this);
-            msgHandler.RemoveObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/DATA/CHALLENGE/CONTROL", this);
-            msgHandler.RemoveObserver("Challenge/Control", this);
-        }
+        msgHandler?.RegisterObserver(TopicState, this);
+        msgHandler?.RegisterObserver(TopicResult, this);
     }
 
+    private void OnDisable()
+    {
+        msgHandler?.RemoveObserver(TopicState, this);
+        msgHandler?.RemoveObserver(TopicResult, this);
+
+        if (difficultyButton)
+            difficultyButton.onClick.RemoveListener(OnDifficultyClicked);
+    }
+
+    // ---------------------------------------------------------
+    // MQTT Handling
+    // ---------------------------------------------------------
     public void OnNotify(string eventType, object data)
     {
-        Debug.Log($"Received notification for event: {eventType} with data: {data} in the ChallengevbarController");
-        if (eventType == "MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/DATA/CHALLENGE")
-        {
-            HandleChallengeData(data as string);
-        }
-        else if (eventType == "MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/DATA/PROGRESSBAR")
-        {
-            Debug.Log("ProgressbarData Recieved");
-            HandleProgressBarData(data as string);
-        }
-        else if (eventType == "MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/DATA/CHALLENGE/CONTROL")
-        {
-            HandleChallengeControl(data as string);
-        }
-        else if (eventType == "Challenge/Control")
-        {
-            Debug.Log("JJJJJJJJJJJJJJJJJJJJJAAAAAAAA REEEESET");
-            HandleChallengeControl(data as string);
-        }
-    }
-
-    private void HandleChallengeData(string jsonString)
-    {
-        if (jsonString != null)
-        {
-            JObject json = JObject.Parse(jsonString);
-            string benchmarkString = (string)json["benchmark"];
-            baseBenchmark = ConvertBenchmarkToSeconds(benchmarkString);
-            AdjustBenchmark();
-            elapsedTime = 0f;
-             isActiveChallenge = true; // Challenge wird als aktiv gesetzt
-
-            if (progressCoroutine != null)
-            {
-                StopCoroutine(progressCoroutine);
-            }
-            progressCoroutine = StartCoroutine(UpdateChallengeBar());
-        }
-    }
-
-    private void HandleProgressBarData(string jsonString)
-{
-    if (jsonString != null)
-    {
-        JObject json = JObject.Parse(jsonString);
-
-        // Level aktualisieren
-        if (json["level"] != null)
-        {
-            currentLevel = json["level"]?.ToObject<int>() ?? 0;
-            UpdateLevelText();
-        }
-         if (!isActiveChallenge) 
-        {
-            Debug.Log("ProgressBar update ignored, because no active challenge.");
+        if (data is not string json)
             return;
-        }
-        // TotalSteps und CurrentStep auswerten
-        int totalSteps = json["totalSteps"]?.ToObject<int>() ?? 0;
-        int currentStep = json["currentStep"]?.ToObject<int>() ?? 0;
 
-        if (totalSteps > 0 && currentStep > 0 && totalSteps == currentStep)
-        {
-            Debug.Log($"User completed the challenge at level {currentLevel} with {totalSteps} steps!");
+        if (eventType == TopicState)
+            OnStateMessage(json);
 
-            // Erfolgsmeldung erstellen
-            JObject resultData = new JObject
-            {
-                ["difficulty"] = difficultyLevels[currentDifficultyIndex],
-                ["difficulty_raw"] = currentDifficultyIndex,
-                ["level"] = currentLevel,
-                ["result"] = "success" // Erfolg oder anderes Ergebnis
-            };
-            Debug.Log($"Difficulty {difficultyLevels[currentDifficultyIndex]}");
-            ResetChallenge();
-            // Ergebnis an Observer senden
-            msgHandler.NotifyObservers("UserResultEvent/Challenge", resultData.ToString());
-            // JSON-Daten erstellen
-        JObject badgeData = new JObject
-        {
-            ["level"] = currentLevel,
-            ["difficulty"] = currentDifficultyIndex,
-            ["status"] = "unlocked",
-            ["timestamp"] = DateTime.UtcNow.ToString("o"),
-            ["mqtt"] = true // Flag, um die MQTT-Veröffentlichung auszulösen
-        };
-
-        // Benachrichtige den MsgHandler
-        msgHandler.NotifyObservers("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/BADGE/UNLOCKED", badgeData);
-            Debug.Log("UserResultEvent/Challenge published with success!");
-        }
+        else if (eventType == TopicResult)
+            OnResultMessage(json);
     }
-}
-    private void HandleChallengeControl(string jsonString)
-    {
-        if (jsonString != null)
-        {
-            JObject json = JObject.Parse(jsonString);
-            string command = (string)json["Cmd"];
 
-            if (command == "Pause")
-            {
-                PauseChallenge();
-            }
-            else if (command == "Continue")
-            {
-                ContinueChallenge();
-            }
-            else if (command == "Reset")
-            {
-                ResetChallenge();
-            }
+    private void OnStateMessage(string json)
+    {
+        var root = JToken.Parse(json);
+        var payload = root["data"] ?? root;
+
+        string cmd = payload["Cmd"]?.ToString();
+
+        switch (cmd)
+        {
+            case "Start":
+                float? bench = payload["benchmark"]?.Value<float>();
+                if (bench.HasValue)
+                {
+                    benchmarkSeconds = bench.Value;
+                    StartChallengeBar();
+                }
+                break;
+
+            case "Reset":
+                ResetBar();
+                break;
+
+            case "Pause":
+            case "Continue":
+                // If later needed
+                break;
         }
     }
 
-    private void ResetChallenge()
+    private void OnResultMessage(string json)
     {
-        Debug.Log("ChallengeBarController resetting.");
-        if (progressCoroutine != null)
+        var root = JToken.Parse(json);
+        var payload = root["data"] ?? root;
+
+        string result = payload["result"]?.ToString()?.ToLowerInvariant();
+        string message = payload["message"]?.ToString();
+
+        bool success = result == "success" || result == "ok" || result == "passed";
+
+        if (string.IsNullOrEmpty(message))
+            message = success ? "Challenge completed!" : "Challenge failed!";
+
+        if (resultRoutine != null) StopCoroutine(resultRoutine);
+        resultRoutine = StartCoroutine(ShowResult(success, message));
+
+        ResetBar();
+    }
+
+    // ---------------------------------------------------------
+    // ChallengeBar Animation
+    // ---------------------------------------------------------
+    private void StartChallengeBar()
+    {
+        if (progressRoutine != null)
+            StopCoroutine(progressRoutine);
+
+        progressRoutine = StartCoroutine(AnimateProgressBar());
+    }
+
+    private IEnumerator AnimateProgressBar()
+    {
+        progressBar.fillAmount = 0f;
+        isRunning = true;
+
+        float t = 0f;
+
+        while (t < benchmarkSeconds)
         {
-            StopCoroutine(progressCoroutine);
-            progressCoroutine = null;
+            t += Time.deltaTime;
+            progressBar.fillAmount = Mathf.Clamp01(t / benchmarkSeconds);
+            yield return null;
         }
+
+        isRunning = false;
+    }
+
+    private void ResetBar()
+    {
+        if (progressRoutine != null)
+            StopCoroutine(progressRoutine);
 
         progressBar.fillAmount = 0f;
-        elapsedTime = 0f;
-        completed = false;
 
-        Debug.Log("ChallengeBarController reset complete.");
     }
 
-
-    private void UpdateLevelText()
+    // ---------------------------------------------------------
+    // Result Overlay
+    // ---------------------------------------------------------
+    private IEnumerator ShowResult(bool success, string message)
     {
-        levelText.text = $"Level: {currentLevel}";
-    }
+        GameObject panel = success ? successPanel : failPanel;
+        Text text = success ? successText : failText;
 
-    private int ConvertBenchmarkToSeconds(string benchmarkString)
-    {
-        try
+        if (!panel || !text)
+            yield break;
+
+        text.text = message;
+
+        var cg = panel.GetComponent<CanvasGroup>();
+        if (!cg)
+            cg = panel.AddComponent<CanvasGroup>();
+
+        panel.SetActive(true);
+        cg.alpha = 0f;
+
+        // Fade-in
+        float t = 0f;
+        while (t < overlayFadeDuration)
         {
-            string[] parts = benchmarkString.Split(':');
-            if (parts.Length == 2)
-            {
-                int minutes = int.Parse(parts[0]);
-                int seconds = int.Parse(parts[1]);
-                return (minutes * 60) + seconds;
-            }
-            else
-            {
-                Debug.LogError($"Invalid benchmark format: {benchmarkString}. Expected format MM:SS.");
-                return 0;
-            }
+            t += Time.deltaTime;
+            cg.alpha = t / overlayFadeDuration;
+            yield return null;
         }
-        catch (Exception e)
+
+        yield return new WaitForSeconds(overlayDuration);
+
+        // Fade-out
+        t = 0f;
+        while (t < overlayFadeDuration)
         {
-            Debug.LogError($"Error parsing benchmark: {benchmarkString}. Exception: {e}");
-            return 0;
+            t += Time.deltaTime;
+            cg.alpha = 1f - (t / overlayFadeDuration);
+            yield return null;
         }
+
+        panel.SetActive(false);
     }
 
-    private void AdjustBenchmark()
+    // ---------------------------------------------------------
+    // Difficulty Handling
+    // ---------------------------------------------------------
+    public void OnDifficultyClicked()
     {
-        adjustedBenchmark = Mathf.RoundToInt(baseBenchmark * difficultyModifiers[currentDifficultyIndex]);
-        Debug.Log($"Benchmark adjusted to {adjustedBenchmark} seconds for difficulty '{difficultyLevels[currentDifficultyIndex]}'");
-    }
+        currentDifficultyIndex =
+            (currentDifficultyIndex + 1) % difficultyLevels.Length;
 
-    public void ChangeDifficulty()
-    {
-        if (progressCoroutine != null) return;
-
-        currentDifficultyIndex = (currentDifficultyIndex + 1) % difficultyLevels.Length;
         UpdateDifficultyText();
-        AdjustBenchmark();
+        SendDifficultyToBackend();
     }
 
     private void UpdateDifficultyText()
     {
-        difficultyText.text = $"{difficultyLevels[currentDifficultyIndex]}";
+        if (difficultyText)
+            difficultyText.text = difficultyLevels[currentDifficultyIndex];
     }
 
-    private void PauseChallenge()
+    private void SendDifficultyToBackend()
     {
-        isPaused = true;
-    }
-
-    private void ContinueChallenge()
-    {
-        if (isPaused)
+        var payload = new JObject
         {
-            isPaused = false;
-            if (progressCoroutine == null)
-            {
-                progressCoroutine = StartCoroutine(UpdateChallengeBar());
-            }
-        }
+            ["Cmd"] = "SetDifficulty",
+            ["difficulty_index"] = currentDifficultyIndex,
+            ["difficulty_label"] = difficultyLevels[currentDifficultyIndex],
+            ["mqtt"] = true
+        };
+        Debug.Log($"[ChallengeBarController] Sending difficulty to backend: {payload}");
+        msgHandler?.NotifyObservers(TopicControl, payload);
     }
-
-private IEnumerator UpdateChallengeBar()
-{
-    float duration = adjustedBenchmark;
-    while (elapsedTime < duration)
-    {
-        if (isPaused)
-        {
-            yield return null;
-            continue;
-        }
-
-        elapsedTime += Time.deltaTime;
-        progressBar.fillAmount = Mathf.Clamp01(elapsedTime / duration);
-
-        if (progressBar.fillAmount >= 1f)
-        {
-            progressCoroutine = null;
-            Debug.Log("Challenge Complete");
-            NotifyChallengeFailure();
-            yield break;
-        }
-
-        yield return null;
-    }
-}
-
-private void NotifyChallengeFailure()
-{
-    JObject resultData = new JObject
-    {
-        ["result"] = "failed",
-        ["reason"] = "time_expired"
-    };
-    isActiveChallenge = false;
-    // Sende das Ergebnis an den Observer
-    msgHandler.NotifyObservers("UserResultEvent/Challenge", resultData.ToString());
-    Debug.Log("Challenge failed notification sent.");
-}
-
 }

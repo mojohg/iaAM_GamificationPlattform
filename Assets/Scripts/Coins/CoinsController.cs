@@ -6,228 +6,234 @@ using Rocworks.Mqtt;
 
 public class CoinsController : MonoBehaviour, IObserver
 {
-    [SerializeField] private GameObject coinPrefab; // Prefab für einzelne Coins
-    [SerializeField] private Transform coinTarget; // Zielposition der Coins (z. B. UI-Anzeige)
-    [SerializeField] private Text coinText; // Textfeld, das die Anzahl der Coins anzeigt
-    [SerializeField] private Transform coinSpawnArea; // Bereich, aus dem die Coins starten (z. B. ein Rechteck)
-    private MsgHandler msgHandler;
+    [Header("Coin Prefabs & Targets")]
+    [SerializeField] private GameObject coinPrefab;
 
-    private int coinsAwarded = 0;
-    private bool awaitingResponse = false;
-    private bool resultReceived = false;
-    private JObject challengeResultData;
+    [Tooltip("Zielposition der Coins – dort sitzt deine Userdaten-/Coin-Anzeige.")]
+    [SerializeField] private Transform coinTarget;
 
-    private void Start()
+    [Tooltip("Spawnbereich, aus dem Coins bei Gutschrift kommen (z. B. Challenge-Bereich).")]
+    [SerializeField] private Transform creditSpawnArea;
+
+    [Tooltip("Spawnbereich/Ziel, wohin Coins bei Abbuchung fliegen (z. B. Shop-Bereich).")]
+    [SerializeField] private Transform debitTargetArea;
+
+    [Header("UI - Delta Text (+10 / -5)")]
+    [SerializeField] private Text coinDeltaText;
+
+    [Header("MQTT / MsgHandler")]
+    [SerializeField] private MsgHandler msgHandler;
+
+    [Header("Topic-Konfiguration")]
+    [Tooltip("MQTT-Gruppe, z.B. GAMING")]
+    [SerializeField] private string group = "GAMING";
+
+    [Tooltip("Topic-Key relativ zur Gruppe, z.B. USERDATA/COIN/EVENT")]
+    [SerializeField] private string category = "USERDATA/COIN/EVENT";
+
+    [Header("Animation Settings")]
+    [SerializeField] private float coinTravelDuration = 1.0f;
+    [SerializeField] private float coinSpawnDelay = 0.05f;
+    [SerializeField] private Vector3 textInitialScale = new Vector3(0.5f, 0.5f, 0.5f);
+    [SerializeField] private Vector3 textTargetScale = new Vector3(1.5f, 1.5f, 1.5f);
+    [SerializeField] private float textScaleDuration = 0.5f;
+    [SerializeField] private float textStayDuration = 1.0f;
+
+    private string CoinEventTopic => TopicNamespace.TopicFor(group, category);
+
+    private void Awake()
     {
-        msgHandler = FindObjectOfType<MsgHandler>();
+        if (!msgHandler)
+            msgHandler = FindObjectOfType<MsgHandler>();
+
+        if (!coinDeltaText)
+            Debug.LogWarning("[CoinsController] coinDeltaText is not assigned.");
+
+        if (coinDeltaText)
+            coinDeltaText.gameObject.SetActive(false);
+    }
+
+    private void OnEnable()
+    {
         if (msgHandler != null)
         {
-            msgHandler.RegisterObserver("UserResultEvent/Challenge", this);
-            msgHandler.RegisterObserver("UserDataUpdate/Coins", this);
-            msgHandler.RegisterObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/COIN/RESPONSE", this);
+            msgHandler.RegisterObserver(CoinEventTopic, this);
+            Debug.Log($"[CoinsController] Listening to {CoinEventTopic}");
         }
-        coinText.gameObject.SetActive(false);
-        
     }
 
-    private void OnDestroy()
+    private void OnDisable()
     {
         if (msgHandler != null)
         {
-            msgHandler.RemoveObserver("UserResultEvent/Challenge", this);
-            msgHandler.RemoveObserver("UserDataUpdate/Coins", this);
-            msgHandler.RemoveObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/COIN/RESPONSE", this);
+            msgHandler.RemoveObserver(CoinEventTopic, this);
         }
     }
 
-public void OnNotify(string eventType, object data)
-{
-    if (eventType == "UserResultEvent/Challenge")
+    // ---------------------------------------------------------
+    // IObserver
+    // ---------------------------------------------------------
+    public void OnNotify(string eventType, object data)
     {
-        HandleChallengeResult(data as string);
-    }
-    else if (eventType == "UserDataUpdate/Coins")
-    {
-        HandleCoinsUpdate(data as string);
-    }
-    else if (eventType == "MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/COIN/RESPONSE")
-    {
-        HandleCoinResponse(data as string);
-    }
-}
+        if (eventType != CoinEventTopic)
+            return;
 
+        if (data is not string jsonString)
+        {
+            Debug.LogError($"[CoinsController] Expected JSON string, got {data?.GetType()}");
+            return;
+        }
 
-    private void HandleChallengeResult(string jsonString)
+        HandleCoinEvent(jsonString);
+    }
+
+    // ---------------------------------------------------------
+    // MQTT Event Handling
+    // ---------------------------------------------------------
+    private void HandleCoinEvent(string jsonString)
     {
         if (string.IsNullOrEmpty(jsonString))
         {
-            Debug.LogWarning("Challenge result data is null or empty.");
+            Debug.LogWarning("[CoinsController] Empty coin event payload.");
             return;
         }
 
-        challengeResultData = JObject.Parse(jsonString);
+        JObject root = JObject.Parse(jsonString);
+        JToken payload = root["data"] ?? root;
 
-        bool success = challengeResultData["result"]?.ToString() == "success";
-        if (!success)
+        // Wir akzeptieren "delta" oder "amount"
+        int delta = payload["delta"]?.ToObject<int>() 
+                    ?? payload["amount"]?.ToObject<int>() ?? 0;
+
+        if (delta == 0)
         {
-            Debug.Log("Challenge failed. No coins will be requested.");
+            Debug.Log("[CoinsController] Coin delta is 0 – no animation.");
             return;
         }
 
-        resultReceived = true;
-        SendCoinRequestToCoreSystem(challengeResultData);
+        bool isCredit = delta > 0;
+        int amount = Mathf.Abs(delta);
+
+        StartCoroutine(PlayCoinAnimation(amount, isCredit));
     }
 
-    private void SendCoinRequestToCoreSystem(JObject resultData)
+    // ---------------------------------------------------------
+    // Animation
+    // ---------------------------------------------------------
+    private IEnumerator PlayCoinAnimation(int amount, bool isCredit)
     {
-        if (awaitingResponse)
+        if (!coinDeltaText)
+            yield break;
+
+        // Text vorbereiten
+        coinDeltaText.gameObject.SetActive(true);
+        coinDeltaText.text = (isCredit ? "+" : "-") + amount;
+
+        // Optional: Farbe für Credit/Debit
+        coinDeltaText.color = isCredit ? Color.green : Color.red;
+
+        // Text-Skalierung
+        StartCoroutine(ScaleTextRoutine());
+
+        // Coin-Flug
+        for (int i = 0; i < amount; i++)
         {
-            Debug.LogWarning("Already waiting for coin response. Request ignored.");
-            return;
-        }
-
-        JObject request = new JObject
-        {
-            ["level"] = resultData["level"],
-            ["difficulty"] = resultData["difficulty_raw"],
-            ["mqtt"] = true
-        };
-
-        awaitingResponse = true;
-        msgHandler.NotifyObservers("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/USERDATA/COIN/REQUEST", request);
-        Debug.Log($"Coin request sent: {request}");
-    }
-
-    private void HandleCoinsUpdate(string jsonString)
-    {
-        if (string.IsNullOrEmpty(jsonString))
-        {
-            Debug.LogWarning("Coins update data is null or empty.");
-            return;
-        }
-
-        JObject coinData = JObject.Parse(jsonString);
-        coinsAwarded = coinData["coins"]?.ToObject<int>() ?? 0;
-        awaitingResponse = false;
-
-        Debug.Log($"Coins awarded: {coinsAwarded}");
-
-        if (resultReceived)
-        {
-            StartCoroutine(PlayCoinAnimation());
+            CreateFlyingCoin(isCredit);
+            yield return new WaitForSeconds(coinSpawnDelay);
         }
     }
 
-
-    private void HandleCoinResponse(string jsonString)
+    private IEnumerator ScaleTextRoutine()
     {
-        if (string.IsNullOrEmpty(jsonString))
+        coinDeltaText.transform.localScale = textInitialScale;
+
+        float elapsed = 0f;
+
+        // Scale-Up
+        while (elapsed < textScaleDuration)
         {
-            Debug.LogWarning("Coin response data is null or empty.");
-            return;
-        }
-
-        JObject coinData = JObject.Parse(jsonString);
-
-        // Anzahl der Coins aus der Antwort extrahieren
-        coinsAwarded = coinData["coins"]?.ToObject<int>() ?? 0;
-        awaitingResponse = false;
-
-        Debug.Log($"Received coin response: {coinsAwarded} coins.");
-
-        // Wenn Challenge-Result-Daten bereits vorhanden sind, starte die Animation
-        if (resultReceived)
-        {
-            StartCoroutine(PlayCoinAnimation());
-        }
-    }
-
-    private IEnumerator PlayCoinAnimation()
-    {
-        // Text anzeigen
-        coinText.text = $"+{coinsAwarded}";
-        StartCoroutine(ScaleText());
-
-        // Coin-Regen erzeugen
-        for (int i = 0; i < coinsAwarded; i++)
-        {
-            CreateFlyingCoin();
-            yield return new WaitForSeconds(0.05f); // Verzögerung zwischen Coins
-        }
-    }
-
-    private IEnumerator ScaleText()
-    {
-        coinText.gameObject.SetActive(true);
-        Vector3 initialScale = new Vector3(0.5f, 0.5f, 0.5f);
-        Vector3 targetScale = new Vector3(1.5f, 1.5f, 1.5f);
-
-        float elapsedTime = 0f;
-
-        // Vergrößern
-        while (elapsedTime < 0.5f)
-        {
-            elapsedTime += Time.deltaTime;
-            coinText.transform.localScale = Vector3.Lerp(initialScale, targetScale, elapsedTime / 0.5f);
+            elapsed += Time.deltaTime;
+            float t = Mathf.Clamp01(elapsed / textScaleDuration);
+            coinDeltaText.transform.localScale = Vector3.Lerp(textInitialScale, textTargetScale, t);
             yield return null;
         }
 
-        elapsedTime = 0f;
+        elapsed = 0f;
 
-        // Verkleinern
-        while (elapsedTime < 0.5f)
+        // Scale-Down
+        while (elapsed < textScaleDuration)
         {
-            elapsedTime += Time.deltaTime;
-            coinText.transform.localScale = Vector3.Lerp(targetScale, initialScale, elapsedTime / 0.5f);
+            elapsed += Time.deltaTime;
+            float t = Mathf.Clamp01(elapsed / textScaleDuration);
+            coinDeltaText.transform.localScale = Vector3.Lerp(textTargetScale, textInitialScale, t);
             yield return null;
         }
 
-        // Ausblenden
-        yield return new WaitForSeconds(1f);
-        coinText.gameObject.SetActive(false);
+        // kurz stehen lassen
+        yield return new WaitForSeconds(textStayDuration);
+
+        coinDeltaText.gameObject.SetActive(false);
     }
 
-    private void CreateFlyingCoin()
+    private void CreateFlyingCoin(bool isCredit)
     {
-        if (coinPrefab == null || coinTarget == null || coinSpawnArea == null)
+        if (!coinPrefab || !coinTarget || !creditSpawnArea || !debitTargetArea)
         {
-            Debug.LogWarning("Missing references for coin animation.");
+            Debug.LogWarning("[CoinsController] Missing references for coin animation.");
             return;
         }
 
-        // Erstelle eine neue Coin
-        GameObject coin = Instantiate(coinPrefab, coinSpawnArea);
+        Vector3 startPos;
+        Vector3 targetPos;
 
-        // Zufällige Startposition im Spawnbereich
-        RectTransform spawnRect = coinSpawnArea.GetComponent<RectTransform>();
-        Vector3 randomPosition = new Vector3(
-            Random.Range(spawnRect.rect.xMin, spawnRect.rect.xMax),
-            Random.Range(spawnRect.rect.yMin, spawnRect.rect.yMax),
-            0
+        if (isCredit)
+        {
+            // Gutschrift: Coin von creditSpawnArea -> coinTarget (Richtung Userdaten)
+            startPos = GetRandomPointInRect(creditSpawnArea);
+            targetPos = coinTarget.position;
+        }
+        else
+        {
+            // Abbuchung: Coin von coinTarget -> debitTargetArea (Richtung Shop / Ausgabe)
+            startPos = coinTarget.position;
+            targetPos = GetRandomPointInRect(debitTargetArea);
+        }
+
+        GameObject coin = Instantiate(coinPrefab, startPos, Quaternion.identity, transform);
+        StartCoroutine(MoveCoinToTarget(coin, targetPos));
+    }
+
+    private Vector3 GetRandomPointInRect(Transform area)
+    {
+        RectTransform rt = area.GetComponent<RectTransform>();
+        if (!rt)
+            return area.position;
+
+        var rect = rt.rect;
+        Vector3 local = new Vector3(
+            Random.Range(rect.xMin, rect.xMax),
+            Random.Range(rect.yMin, rect.yMax),
+            0f
         );
 
-        coin.transform.localPosition = randomPosition;
-
-        // Bewegung zur Zielposition
-        StartCoroutine(MoveCoinToTarget(coin));
+        return area.TransformPoint(local);
     }
 
-    private IEnumerator MoveCoinToTarget(GameObject coin)
+    private IEnumerator MoveCoinToTarget(GameObject coin, Vector3 targetPos)
     {
-        Vector3 startPosition = coin.transform.position;
-        Vector3 targetPosition = coinTarget.position;
+        if (!coin) yield break;
 
-        float duration = 1f;
-        float elapsedTime = 0f;
+        Vector3 startPos = coin.transform.position;
+        float elapsed = 0f;
 
-        while (elapsedTime < duration)
+        while (elapsed < coinTravelDuration)
         {
-            elapsedTime += Time.deltaTime;
-            coin.transform.position = Vector3.Lerp(startPosition, targetPosition, elapsedTime / duration);
+            elapsed += Time.deltaTime;
+            float t = Mathf.Clamp01(elapsed / coinTravelDuration);
+            coin.transform.position = Vector3.Lerp(startPos, targetPos, t);
             yield return null;
         }
 
-        // Coin am Ziel entfernen
         Destroy(coin);
     }
 }

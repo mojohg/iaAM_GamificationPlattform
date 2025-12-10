@@ -46,12 +46,21 @@ public class ScalarBarController : MonoBehaviour, IObserver
         _topic = TopicNamespace.TopicFor(group, metric.ToString());
         msgHandler?.RegisterObserver(_topic, this);
 
+        // NEU: Auf Root-Änderungen lauschen
+        TopicNamespace.OnRootChanged += HandleRootChanged;
+
         // sofortige Erstfärbung aus aktuellem Fill (falls schon gesetzt)
         if (fill) UpdateColor(fill.fillAmount);
     }
 
 
-    void OnDisable() => msgHandler?.RemoveObserver(_topic, this);
+    void OnDisable()
+    {
+        msgHandler?.RemoveObserver(_topic, this);
+        
+        // NEU: Listener wieder abmelden
+        TopicNamespace.OnRootChanged -= HandleRootChanged;
+    }
 
     public void OnNotify(string topic, object data)
     {
@@ -126,6 +135,7 @@ public class ScalarBarController : MonoBehaviour, IObserver
         value01 = 0f;
         if (string.IsNullOrWhiteSpace(payload)) return false;
         var s = payload.Trim();
+        Debug.Log($"[ScalarBarController] Received payload: {s}");
 
         if (s.StartsWith("{"))
         {
@@ -148,5 +158,19 @@ public class ScalarBarController : MonoBehaviour, IObserver
             } catch { return false; }
         }
         return false;
+    }
+    /// <summary>
+    /// Aktualisiert die lokale Topic-Variable, wenn sich der Root ändert.
+    /// </summary>
+    private void HandleRootChanged(string oldRoot, string newRoot)
+    {
+        // WICHTIG: Wir müssen uns NICHT beim MsgHandler an- oder abmelden.
+        // Das macht der MsgHandler (mit RemapObserverTopics) bereits für uns.
+        // Wir müssen nur unsere LOKALE Variable _topic aktualisieren,
+        // damit der Filter in OnNotify() und der Abmelde-Aufruf in OnDisable()
+        // den korrekten (neuen) Topic-String verwenden.
+        
+        _topic = TopicNamespace.TopicFor(group, metric.ToString());
+        Debug.Log($"[ScalarBarController] Topic remapped to: {_topic}");
     }
 }

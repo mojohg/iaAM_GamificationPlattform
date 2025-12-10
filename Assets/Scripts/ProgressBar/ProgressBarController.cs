@@ -6,103 +6,134 @@ using System;
 using Rocworks.Mqtt;
 
 /// <summary>
-/// The ProgressBarController class manages the progress bar display and updates based on MQTT messages.
-/// It also notifies observers when the progress is complete.
+/// Manages the progress bar display and updates based on MQTT messages.
+/// Notifies observers when the progress is complete.
 /// </summary>
 public class ProgressBarController : MonoBehaviour, IObserver
 {
-    /// <summary>
-    /// The progress bar image component.
-    /// </summary>
+    [Header("UI")]
     [SerializeField] private Image progressBar;
-
-    /// <summary>
-    /// The text component displaying the current level.
-    /// </summary>
     [SerializeField] private Text levelText;
+
+    [Header("MQTT / MsgHandler")]
+    [SerializeField] private MsgHandler msgHandler;
+
+    [Header("Topic-Konfiguration")]
+    [Tooltip("Topic-Gruppe, z.B. GAMING")]
+    [SerializeField] private string group = "GAMING";
+
+    [Tooltip("Topic-Key relativ zur Gruppe, z.B. DATA/PROGRESSBAR")]
+    [SerializeField] private string category = "DATA/PROGRESSBAR";
+
+    [Header("Animation")]
+    [Tooltip("Dauer für die Progressbar-Animation in Sekunden.")]
+    [SerializeField] private float animationDuration = 2f;
+
+    [Tooltip("Verzögerung, bevor die Progressbar nach 100 % wieder auf 0 gesetzt wird.")]
+    [SerializeField] private float resetDelay = 3f;
 
     private int totalSteps;
     private int currentStep;
     private int currentLevel;
+
     private Coroutine progressCoroutine;
     private Coroutine resetCoroutine;
-    private MsgHandler msgHandler;
 
-    /// <summary>
-    /// Initializes the progress bar to an empty state and registers the observer with the MsgHandler.
-    /// </summary>
-    private void Start()
+    private const string LocalStateTopic = "Application/Progressbar/State";
+
+    private string Topic() => TopicNamespace.TopicFor(group, category);
+
+    private void Awake()
     {
-        msgHandler = FindObjectOfType<MsgHandler>();
-        if (msgHandler != null)
-        {
-            msgHandler.RegisterObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/DATA/PROGRESSBAR", this);
-            msgHandler.RegisterObserver("Application/Progressbar/State", this);
-            Debug.Log("ExampleObserver registered for ProgressBar");
-        }
-        progressBar.fillAmount = 0f;
+        if (!msgHandler)
+            msgHandler = FindObjectOfType<MsgHandler>();
+
+        if (!progressBar)
+            Debug.LogError("[ProgressBarController] ProgressBar Image is not assigned!");
+
+        if (levelText)
+            levelText.text = string.Empty;
+
+        if (progressBar)
+            progressBar.fillAmount = 0f;
     }
 
-    /// <summary>
-    /// Unregisters the observer from the MsgHandler when the object is destroyed.
-    /// </summary>
-    private void OnDestroy()
+    private void OnEnable()
     {
         if (msgHandler != null)
         {
-            msgHandler.RemoveObserver("MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/DATA/PROGRESSBAR", this);
-            msgHandler.RemoveObserver("Application/Progressbar/State", this);
+            msgHandler.RegisterObserver(Topic(), this);
+            Debug.Log($"[ProgressBarController] Registered for topic '{Topic()}'.");
+        }
+        else
+        {
+            Debug.LogError("[ProgressBarController] MsgHandler not found in scene!");
+        }
+    }
+
+    private void OnDisable()
+    {
+        if (msgHandler != null)
+        {
+            msgHandler.RemoveObserver(Topic(), this);
+            Debug.Log($"[ProgressBarController] Unregistered from topic '{Topic()}'.");
         }
     }
 
     /// <summary>
     /// Handles MQTT messages to update the progress bar.
     /// </summary>
-    /// <param name="eventType">The event type.</param>
-    /// <param name="data">The data associated with the event.</param>
     public void OnNotify(string eventType, object data)
     {
-        if (eventType == "MVG_ESCH/PRODUCTION/MW/KST/0001/GAMING/DATA/PROGRESSBAR")
+        if (eventType != Topic())
+            return;
+
+        if (data is not string jsonString)
         {
-            Debug.Log("ObserverReached");
-            Debug.Log($"Received data: {data}");
+            Debug.LogError("[ProgressBarController] Received data is not a JSON string!");
+            return;
+        }
 
-            string jsonString = data as string;
-            if (jsonString != null)
+        try
+        {
+            var root = JToken.Parse(jsonString);
+
+            // Unterstützt sowohl { "data": { ... } } als auch flaches Objekt
+            var payload = root["data"] ?? root;
+
+            totalSteps  = payload["totalSteps"]?.Value<int>()
+                          ?? payload["total_steps"]?.Value<int>() ?? 0;
+
+            currentStep = payload["currentStep"]?.Value<int>()
+                          ?? payload["current_step"]?.Value<int>() ?? 0;
+
+            var levelToken = payload["level"] ?? payload["current_level"];
+            if (levelToken != null)
             {
-                try
-                {
-                    JObject json = JObject.Parse(jsonString);
-
-                    totalSteps = json["totalSteps"]?.ToObject<int>() ?? 0;
-                    currentStep = json["currentStep"]?.ToObject<int>() ?? 0;
-
-                    // Überprüfen, ob "level" existiert
-                    if (json["level"] != null)
-                    {
-                        currentLevel = json["level"]?.ToObject<int>() ?? 0;
-                        UpdateLevelText(); // Update Level nur, wenn vorhanden
-                    }
-
-                    if (progressCoroutine != null)
-                    {
-                        StopCoroutine(progressCoroutine);
-                    }
-
-                    msgHandler.NotifyObservers("Application/Progressbar/State", "Started");
-                    progressCoroutine = StartCoroutine(UpdateProgressBar());
-                }
-                catch (System.Exception ex)
-                {
-                    Debug.LogError($"Error parsing progress bar data: {ex.Message}");
-                }
+                currentLevel = levelToken.Value<int>();
+                UpdateLevelText();
             }
+
+            if (totalSteps <= 0)
+            {
+                Debug.LogWarning("[ProgressBarController] totalSteps <= 0 – ignoring update.");
+                return;
+            }
+
+            if (progressCoroutine != null)
+                StopCoroutine(progressCoroutine);
+
+            // interner Status für andere Observer
+            msgHandler?.NotifyObservers(LocalStateTopic, "Started");
+            progressCoroutine = StartCoroutine(UpdateProgressBar());
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[ProgressBarController] Error parsing progress bar data: {ex.Message}");
         }
     }
 
-    /// <summary>
-    /// Updates the level text.
-    /// </summary>
+    /// <summary>Updates the level text.</summary>
     private void UpdateLevelText()
     {
         if (levelText != null)
@@ -111,70 +142,53 @@ public class ProgressBarController : MonoBehaviour, IObserver
         }
     }
 
-    /// <summary>
-    /// Updates the progress bar fill amount over a duration.
-    /// </summary>
-    /// <returns>An IEnumerator used for the coroutine.</returns>
+    /// <summary>Updates the progress bar fill amount over a duration.</summary>
     private IEnumerator UpdateProgressBar()
     {
-        float targetFillAmount = (float)currentStep / totalSteps;
-        if(targetFillAmount >=1f)
+        if (!progressBar)
+            yield break;
+
+        float targetFillAmount = Mathf.Clamp01((float)currentStep / Mathf.Max(1, totalSteps));
+
+        if (targetFillAmount >= 1f)
         {
-            Debug.Log("ProgressBar full, notifying observers...");
-            msgHandler.NotifyObservers("Application/Progressbar/State", "Complete");
+            Debug.Log("[ProgressBarController] ProgressBar full, notifying observers...");
+            msgHandler?.NotifyObservers(LocalStateTopic, "Complete");
         }
+
         float initialFillAmount = progressBar.fillAmount;
         float elapsedTime = 0f;
-        float duration = 2f;
+        float duration = Mathf.Max(0.01f, animationDuration);
+
         while (elapsedTime < duration)
         {
             elapsedTime += Time.deltaTime;
-            float t = elapsedTime / duration;
-            float easedT = 1f - Mathf.Pow(1f - t, 3f);
+            float t = Mathf.Clamp01(elapsedTime / duration);
+            float easedT = 1f - Mathf.Pow(1f - t, 3f); // easeOutCubic
             progressBar.fillAmount = Mathf.Lerp(initialFillAmount, targetFillAmount, easedT);
             yield return null;
         }
 
         progressBar.fillAmount = targetFillAmount;
 
-        if (progressBar.fillAmount >= 1f)
+        if (Mathf.Approximately(progressBar.fillAmount, 1f))
         {
-            
-
             if (resetCoroutine != null)
-            {
                 StopCoroutine(resetCoroutine);
-            }
-            resetCoroutine = StartCoroutine(ResetProgressBarAfterDelay(3f)); // Start the reset coroutine
+
+            resetCoroutine = StartCoroutine(ResetProgressBarAfterDelay(resetDelay));
         }
     }
 
-    /// <summary>
-    /// Resets the progress bar to empty after a delay.
-    /// </summary>
-    /// <param name="delay">The delay in seconds before resetting the progress bar.</param>
-    /// <returns>An IEnumerator used for the coroutine.</returns>
+    /// <summary>Resets the progress bar to empty after a delay.</summary>
     private IEnumerator ResetProgressBarAfterDelay(float delay)
     {
         yield return new WaitForSeconds(delay);
-        progressBar.fillAmount = 0f;
+        if (progressBar)
+            progressBar.fillAmount = 0f;
     }
 
-    /// <summary>
-    /// Gets the current fill amount of the progress bar.
-    /// </summary>
-    /// <returns>The fill amount as a float between 0 and 1.</returns>
-    public float GetFillAmount()
-    {
-        return progressBar.fillAmount;
-    }
+    public float GetFillAmount() => progressBar ? progressBar.fillAmount : 0f;
 
-    /// <summary>
-    /// Gets the current level.
-    /// </summary>
-    /// <returns>The current level as an integer.</returns>
-    public int GetCurrentLevel()
-    {
-        return currentLevel;
-    }
+    public int GetCurrentLevel() => currentLevel;
 }
