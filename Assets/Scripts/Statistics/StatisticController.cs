@@ -5,8 +5,15 @@ using Newtonsoft.Json.Linq;
 using Rocworks.Mqtt;
 
 /// <summary>
-/// Zeigt User- und Ranking-KPIs basierend auf MQTT-Nachrichten an.
-/// Hängt sich über MsgHandler als IObserver an ein Topic.
+/// Zeigt User- und Ranking-KPIs basierend auf MQTT-Leaderboard-Nachrichten an.
+/// Erwartetes Backend-Payload:
+/// {
+///   "data": {
+///     "rows": [
+///       { "category": "Performance - Ø", "your_account": "17.2s", "ranking": "#1" }
+///     ]
+///   }
+/// }
 /// </summary>
 public class StatisticController : MonoBehaviour, IObserver
 {
@@ -30,10 +37,10 @@ public class StatisticController : MonoBehaviour, IObserver
     [Tooltip("Group innerhalb des TopicNamespace, z.B. GAMING")]
     [SerializeField] private string group = "GAMING";
 
-    [Tooltip("Kategorie innerhalb der Group, z.B. RANKING")]
-    [SerializeField] private string category = "RANKING";
+    [Tooltip("Kategorie innerhalb der Group, z.B. LEADERBOARD/DATA")]
+    [SerializeField] private string category = "LEADERBOARD/DATA";
 
-    private readonly Dictionary<string, Text> userTexts   = new();
+    private readonly Dictionary<string, Text> userTexts = new();
     private readonly Dictionary<string, Text> rankingTexts = new();
 
     private MsgHandler msgHandler;
@@ -41,13 +48,10 @@ public class StatisticController : MonoBehaviour, IObserver
 
     void Awake()
     {
-        // MsgHandler suchen
-        if (!msgHandler) msgHandler = FindObjectOfType<MsgHandler>();
+        if (!msgHandler)
+            msgHandler = FindObjectOfType<MsgHandler>();
 
-        // Dictionaries einmalig aufbauen
         InitializeTextDictionaries();
-
-        // Default-Werte setzen
         UpdateDashboardToDefault();
     }
 
@@ -74,50 +78,50 @@ public class StatisticController : MonoBehaviour, IObserver
         }
     }
 
-    /// <summary>
-    /// Initialisiert die Dictionaries für User- und Ranking-Texte.
-    /// </summary>
     private void InitializeTextDictionaries()
     {
         userTexts.Clear();
-        userTexts.Add("median_performance", performanceUserText);
-        userTexts.Add("median_quality",     qualityUserText);
-        userTexts.Add("max_score",          maxScoreUserText);
-        userTexts.Add("quality_streak",     qualityStreakUserText);
-        userTexts.Add("badge_counter",      badgeCounterText);
-        userTexts.Add("level",              levelText);
+        userTexts.Add("performance", performanceUserText);
+        userTexts.Add("quality", qualityUserText);
+        userTexts.Add("max_score", maxScoreUserText);
+        userTexts.Add("quality_streak", qualityStreakUserText);
+        userTexts.Add("badge_counter", badgeCounterText);
+        userTexts.Add("max_level", levelText);
 
         rankingTexts.Clear();
-        rankingTexts.Add("median_performance", performanceRankingText);
-        rankingTexts.Add("median_quality",     qualityRankingText);
-        rankingTexts.Add("max_score",          maxScoreRankingText);
-        rankingTexts.Add("quality_streak",     qualityStreakRankingText);
-        rankingTexts.Add("badge_counter",      badgeCounterRankingText);
-        rankingTexts.Add("level",              levelRankingText);
+        rankingTexts.Add("performance", performanceRankingText);
+        rankingTexts.Add("quality", qualityRankingText);
+        rankingTexts.Add("max_score", maxScoreRankingText);
+        rankingTexts.Add("quality_streak", qualityStreakRankingText);
+        rankingTexts.Add("badge_counter", badgeCounterRankingText);
+        rankingTexts.Add("max_level", levelRankingText);
     }
 
-    // ---- IObserver ----
     public void OnNotify(string topic, object data)
     {
-        if (topic != _topic) return;
+        if (topic != _topic)
+            return;
 
         Debug.Log($"[StatisticController] Received data for topic: {topic}");
 
         if (data is not string jsonString || string.IsNullOrWhiteSpace(jsonString))
+        {
+            Debug.LogWarning("[StatisticController] Empty or invalid MQTT payload.");
             return;
+        }
 
         try
         {
             JObject json = JObject.Parse(jsonString);
-            JObject kpis = (JObject)json["kpis"];
+            JArray rows = json["data"]?["rows"] as JArray;
 
-            if (kpis == null)
+            if (rows == null)
             {
-                Debug.LogWarning("[StatisticController] Payload has no 'kpis' object.");
+                Debug.LogWarning("[StatisticController] Payload has no data.rows array.");
                 return;
             }
 
-            UpdateDashboardFromKpis(kpis);
+            UpdateDashboardFromRows(rows);
         }
         catch (System.Exception e)
         {
@@ -125,35 +129,62 @@ public class StatisticController : MonoBehaviour, IObserver
         }
     }
 
-    /// <summary>
-    /// Aktualisiert das Dashboard mit den übergebenen KPI-Daten.
-    /// </summary>
-    private void UpdateDashboardFromKpis(JObject kpis)
+    private void UpdateDashboardFromRows(JArray rows)
     {
-        // User-Statistiken
-        foreach (var key in userTexts.Keys)
+        foreach (JToken row in rows)
         {
-            if (!userTexts[key]) continue;
+            string categoryLabel = row["category"]?.ToString();
+            string userValue = row["your_account"]?.ToString() ?? "N/A";
+            string rankingValue = row["ranking"]?.ToString() ?? "N/A";
 
-            string value = kpis[key]?["value"]?.ToString() ?? "N/A";
-            userTexts[key].text = value;
+            string key = MapCategoryToKey(categoryLabel);
+
+            if (string.IsNullOrEmpty(key))
+            {
+                Debug.LogWarning($"[StatisticController] Unknown leaderboard category: {categoryLabel}");
+                continue;
+            }
+
+            if (userTexts.TryGetValue(key, out Text userText) && userText)
+                userText.text = userValue;
+
+            if (rankingTexts.TryGetValue(key, out Text rankingText) && rankingText)
+                rankingText.text = rankingValue;
         }
 
-        // Ranking-Statistiken
-        foreach (var key in rankingTexts.Keys)
-        {
-            if (!rankingTexts[key]) continue;
-
-            string ranking = kpis[key]?["ranking"]?.ToString();
-            rankingTexts[key].text = ranking ?? "No Ranking";
-        }
-
-        Debug.Log("[StatisticController] Dashboard updated with new statistics.");
+        Debug.Log("[StatisticController] Dashboard updated with leaderboard rows.");
     }
 
-    /// <summary>
-    /// Setzt alle Texte auf Default ("N/A").
-    /// </summary>
+    private string MapCategoryToKey(string categoryLabel)
+    {
+        if (string.IsNullOrWhiteSpace(categoryLabel))
+            return null;
+
+        switch (categoryLabel.Trim())
+        {
+            case "Performance - Ø":
+                return "performance";
+
+            case "Quality - Ø":
+                return "quality";
+
+            case "Max Score":
+                return "max_score";
+
+            case "Max Level":
+                return "max_level";
+
+            case "Quality Streak":
+                return "quality_streak";
+
+            case "Badge Counter":
+                return "badge_counter";
+
+            default:
+                return null;
+        }
+    }
+
     private void UpdateDashboardToDefault()
     {
         foreach (var kvp in userTexts)

@@ -50,6 +50,8 @@ public class ChallengeBarController : MonoBehaviour, IObserver
     private Coroutine progressRoutine;
     private Coroutine resultRoutine;
     private int currentDifficultyIndex = 0;
+    private bool difficultyFrozen = false;
+
 
     private void Awake()
     {
@@ -113,11 +115,13 @@ public class ChallengeBarController : MonoBehaviour, IObserver
                 if (bench.HasValue)
                 {
                     benchmarkSeconds = bench.Value;
+                    FreezeDifficulty(true);
                     StartChallengeBar();
                 }
                 break;
 
             case "Reset":
+                FreezeDifficulty(false);
                 ResetBar();
                 break;
 
@@ -232,6 +236,11 @@ public class ChallengeBarController : MonoBehaviour, IObserver
     // ---------------------------------------------------------
     public void OnDifficultyClicked()
     {
+        if (difficultyFrozen)
+        {
+            Debug.Log("[ChallengeBar] Difficulty change blocked (frozen).");
+            return;
+        }
         currentDifficultyIndex =
             (currentDifficultyIndex + 1) % difficultyLevels.Length;
 
@@ -250,11 +259,19 @@ public class ChallengeBarController : MonoBehaviour, IObserver
         var payload = new JObject
         {
             ["Cmd"] = "SetDifficulty",
-            ["difficulty_index"] = currentDifficultyIndex,
+            ["difficulty_index"] = currentDifficultyIndex + 1,
             ["difficulty_label"] = difficultyLevels[currentDifficultyIndex],
             ["mqtt"] = true
         };
         Debug.Log($"[ChallengeBarController] Sending difficulty to backend: {payload}");
         msgHandler?.NotifyObservers(TopicControl, payload);
+    }
+
+    private void FreezeDifficulty(bool freeze)
+    {
+        difficultyFrozen = freeze;
+
+        if (difficultyButton != null)
+            difficultyButton.interactable = !freeze;
     }
 }

@@ -15,7 +15,7 @@ public class CharacterStatisticController : MonoBehaviour, IObserver
     [SerializeField] private Text healthUserText;
     [SerializeField] private Text enemiesDefeatedUserText;
     [SerializeField] private Text weaponUserText;
-    [SerializeField] private Text kdRateUserText;
+    [SerializeField] private Text motRateUserText;
     [SerializeField] private Text inventoryUserText;
 
     [Header("Ranking Stats")]
@@ -23,7 +23,7 @@ public class CharacterStatisticController : MonoBehaviour, IObserver
     [SerializeField] private Text healthRankingText;
     [SerializeField] private Text enemiesDefeatedRankingText;
     [SerializeField] private Text weaponRankingText;
-    [SerializeField] private Text kdRateRankingText;
+    [SerializeField] private Text motRateRankingText;
     [SerializeField] private Text inventoryRankingText;
 
     [Header("MQTT Topic")]
@@ -81,7 +81,7 @@ public class CharacterStatisticController : MonoBehaviour, IObserver
         userTexts.Add("health",            healthUserText);
         userTexts.Add("enemies_defeated",  enemiesDefeatedUserText);
         userTexts.Add("weapon",            weaponUserText);
-        userTexts.Add("kd_rate",           kdRateUserText);
+        userTexts.Add("mot_rate",           motRateUserText);
         userTexts.Add("inventory",         inventoryUserText);
 
         rankingTexts.Clear();
@@ -89,7 +89,7 @@ public class CharacterStatisticController : MonoBehaviour, IObserver
         rankingTexts.Add("health",            healthRankingText);
         rankingTexts.Add("enemies_defeated",  enemiesDefeatedRankingText);
         rankingTexts.Add("weapon",            weaponRankingText);
-        rankingTexts.Add("kd_rate",           kdRateRankingText);
+        rankingTexts.Add("mot_rate",           motRateRankingText);
         rankingTexts.Add("inventory",         inventoryRankingText);
     }
 

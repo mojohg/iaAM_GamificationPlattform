@@ -62,6 +62,14 @@ public class ArenaController : MonoBehaviour, IObserver
     [SerializeField] private Sprite enemyAliveStateSprite;  // z.B. leeres / normal
     [SerializeField] private Sprite enemyDefeatedStateSprite; // z.B. Skull / Haken
 
+    [Header("UI - Arena Result")]
+    [Tooltip("Text for the final arena result title, e.g. VICTORY or DEFEAT.")]
+    [SerializeField] private Text arenaResultTitleText;
+    [Tooltip("Text for the final arena result message.")]
+    [SerializeField] private Text arenaResultMessageText;
+    [Tooltip("0 means the result stays visible until PREPARE/FIGHT resets it.")]
+    [SerializeField] private float resultAutoHideSeconds = 0f;
+
     [Header("Camera")]
     [SerializeField] private Camera mainCamera;
 
@@ -109,8 +117,10 @@ public class ArenaController : MonoBehaviour, IObserver
     private Coroutine _enemyHitSequenceCo;
 
     private Coroutine _avatarCritCo, _avatarBlockCo, _enemyCritCo, _enemyBlockCo;
+    private Coroutine _resultTextCo;
+    private string _lastArenaResult;
 
-    private enum ArenaPhase { Prepare, Fight }
+    private enum ArenaPhase { Prepare, Fight, Finished }
 
     // -------- Unity --------
     private void Awake()
@@ -125,6 +135,8 @@ public class ArenaController : MonoBehaviour, IObserver
         if (avatarBlockedPopup)  avatarBlockedPopup.SetActive(false);
         if (enemyCriticalPopup)  enemyCriticalPopup.SetActive(false);
         if (enemyBlockedPopup)   enemyBlockedPopup.SetActive(false);
+
+        HideArenaResult();
     }
 
     private void Start()
@@ -413,9 +425,9 @@ public class ArenaController : MonoBehaviour, IObserver
 
             e.strength = it["strength"]?.Value<int>() ?? e.strength;
             e.health   = it["health"]?.Value<int>()   ?? e.health;
-            e.defence  = it["defence"]?.Value<int>()  ?? e.defence;
+            e.defence  = it["defense"]?.Value<int>()  ?? e.defence;
             e.tier     = it["tier"]?.Value<int>()     ?? e.tier;
-            e.isDefeated = it["isDefeated"]?.Value<bool>() ?? e.isDefeated;
+            e.isDefeated = it["is_defeated"]?.Value<bool>() ?? e.isDefeated;
         }
 
         if (_phase == ArenaPhase.Prepare)
@@ -430,8 +442,12 @@ public class ArenaController : MonoBehaviour, IObserver
     private void ApplyArenaState(string json)
     {
         var jo = JObject.Parse(json);
+
+        string eventName = jo["event"]?.ToString()?.Trim().ToUpperInvariant();
+        string result = jo["result"]?.ToString()?.Trim().ToUpperInvariant();
+
         var phaseToken = jo["phase"];
-        bool changedToFight = false; // NEW: merken, ob wir jetzt in FIGHT wechseln
+        bool changedToFight = false;
 
         if (phaseToken != null)
         {
@@ -441,12 +457,13 @@ public class ArenaController : MonoBehaviour, IObserver
 
             _phase = phaseStr switch
             {
-                "FIGHT"   => ArenaPhase.Fight,
-                "PREPARE" => ArenaPhase.Prepare,
-                _         => _phase
+                "FIGHT"    => ArenaPhase.Fight,
+                "PREPARE"  => ArenaPhase.Prepare,
+                "FINISHED" => ArenaPhase.Finished,
+                _          => _phase
             };
 
-            changedToFight = (oldPhase != _phase && _phase == ArenaPhase.Fight); // NEW
+            changedToFight = (oldPhase != _phase && _phase == ArenaPhase.Fight);
 
             Debug.Log($"[Arena] ApplyArenaState phase='{raw}' -> '{phaseStr}' {oldPhase} => {_phase}");
         }
@@ -474,8 +491,21 @@ public class ArenaController : MonoBehaviour, IObserver
             if (idx >= 0) _enemyIndex = idx;
         }
 
+        float avatarCurrent = jo["avatar_current_health"]?.Value<float>() ?? -1f;
+        float avatarMax     = jo["avatar_max_health"]?.Value<float>()     ?? -1f;
+        float enemyCurrent  = jo["enemy_current_health"]?.Value<float>()  ?? -1f;
+        float enemyMax      = jo["enemy_max_health"]?.Value<float>()      ?? -1f;
+
+        if (avatarMax > 0f) _avatarMaxHealth = avatarMax;
+        if (avatarCurrent >= 0f) _avatarCurrentHealth = Mathf.Clamp(avatarCurrent, 0f, _avatarMaxHealth);
+
+        if (enemyMax > 0f) _enemyMaxHealth = enemyMax;
+        if (enemyCurrent >= 0f) _enemyCurrentHealth = Mathf.Clamp(enemyCurrent, 0f, _enemyMaxHealth);
+
         if (_phase == ArenaPhase.Prepare)
         {
+            HideArenaResult();
+
             var pav = PurchasedAvatars();
             var curAv = pav.Count > 0 ? pav[Mathf.Clamp(_avatarIndex, 0, pav.Count - 1)] : null;
             _avatarMaxHealth     = curAv?.health ?? 0f;
@@ -487,12 +517,153 @@ public class ArenaController : MonoBehaviour, IObserver
             _enemyCurrentHealth  = _enemyMaxHealth;
         }
 
-        // NEW: Sobald wir vom Backend in den Fight-/Freeze-State gesetzt werden,
-        // schicken wir die aktuelle Auswahl (Avatar, Weapon, Enemy) zurück.
         if (changedToFight)
         {
+            HideArenaResult();
             PublishCurrentSelection();
         }
+
+        bool fightFinished =
+            eventName == "FIGHT_FINISHED" ||
+            _phase == ArenaPhase.Finished ||
+            !string.IsNullOrEmpty(result);
+
+        if (fightFinished)
+        {
+            _phase = ArenaPhase.Finished;
+            _lastArenaResult = result;
+
+            if (result == "WIN")
+            {
+                MarkCurrentEnemyDefeated(enemyName);
+            }
+
+            ShowArenaResult(result, jo);
+        }
+    }
+
+    private void ShowArenaResult(string result, JObject payload)
+    {
+        string normalized = string.IsNullOrEmpty(result)
+            ? "FINISHED"
+            : result.Trim().ToUpperInvariant();
+
+        string title;
+        string message;
+
+        switch (normalized)
+        {
+            case "WIN":
+                title = "VICTORY!";
+                message = BuildWinMessage(payload);
+                break;
+
+            case "LOSE":
+                title = "DEFEAT!";
+                message = "The enemy defeated you. Improve quality and try again!";
+                break;
+
+            case "DRAW":
+                title = "DRAW!";
+                message = "Both fighters collapsed at the same time.";
+                break;
+
+            default:
+                title = "FIGHT FINISHED";
+                message = "Arena fight completed.";
+                break;
+        }
+
+        if (arenaResultTitleText)
+        {
+            arenaResultTitleText.enabled = true;
+            arenaResultTitleText.text = title;
+        }
+
+        if (arenaResultMessageText)
+        {
+            arenaResultMessageText.enabled = true;
+            arenaResultMessageText.text = message;
+        }
+
+        if (_resultTextCo != null)
+        {
+            StopCoroutine(_resultTextCo);
+            _resultTextCo = null;
+        }
+
+        if (resultAutoHideSeconds > 0f)
+        {
+            _resultTextCo = StartCoroutine(HideArenaResultAfterDelay(resultAutoHideSeconds));
+        }
+
+        Debug.Log($"[Arena] Result shown: {title} - {message}");
+    }
+
+    private string BuildWinMessage(JObject payload)
+    {
+        string enemyName = payload["enemy"]?.ToString();
+        string quality = payload["quality"]?.ToString();
+
+        if (!string.IsNullOrEmpty(enemyName))
+            return $"Enemy defeated: {enemyName}";
+
+        if (!string.IsNullOrEmpty(quality))
+            return $"Enemy defeated! Quality: {quality}";
+
+        return "Enemy defeated!";
+    }
+
+    private IEnumerator HideArenaResultAfterDelay(float delay)
+    {
+        yield return new WaitForSeconds(delay);
+        HideArenaResult();
+    }
+
+    private void HideArenaResult()
+    {
+        if (_resultTextCo != null)
+        {
+            StopCoroutine(_resultTextCo);
+            _resultTextCo = null;
+        }
+
+        if (arenaResultTitleText)
+        {
+            arenaResultTitleText.text = string.Empty;
+            arenaResultTitleText.enabled = false;
+        }
+
+        if (arenaResultMessageText)
+        {
+            arenaResultMessageText.text = string.Empty;
+            arenaResultMessageText.enabled = false;
+        }
+
+        _lastArenaResult = null;
+    }
+
+    private void MarkCurrentEnemyDefeated(string enemyNameFromPayload)
+    {
+        string enemyName = enemyNameFromPayload;
+
+        if (string.IsNullOrEmpty(enemyName))
+        {
+            var enemies = AllEnemies();
+            EnemyInfo currentEnemy = enemies.Count > 0
+                ? enemies[Mathf.Clamp(_enemyIndex, 0, enemies.Count - 1)]
+                : null;
+
+            enemyName = currentEnemy?.name;
+        }
+
+        if (string.IsNullOrEmpty(enemyName)) return;
+
+        var enemy = _enemies.FirstOrDefault(e => e.name == enemyName);
+        if (enemy == null) return;
+
+        enemy.isDefeated = true;
+        Debug.Log($"[Arena] Enemy marked defeated locally: {enemyName}");
     }
 
     // NEW: Auswahl des Users an Backend senden
@@ -529,45 +700,165 @@ public class ArenaController : MonoBehaviour, IObserver
     {
         var jo = JObject.Parse(json);
 
-        string target       = jo["target"]?.ToString()?.ToUpperInvariant();
+        string target = jo["target"]?.ToString()?.Trim().ToUpperInvariant();
+        if (target != "AVATAR" && target != "ENEMY")
+        {
+            Debug.LogWarning($"[Arena] Ignoring HIT with unknown target '{target}'. Payload={json}");
+            return;
+        }
+
         float currentHealth = jo["current_health"]?.Value<float>() ?? 0f;
-        float maxHealth     = jo["max_health"]?.Value<float>()     ?? 0f;
-        float critical      = jo["critical_hit"]?.Value<float>()   ?? 0f;
-        float blocked       = jo["blocked_hit"]?.Value<float>()    ?? 0f;
+        float maxHealth = jo["max_health"]?.Value<float>() ?? 0f;
+
+        int damage = jo["damage"]?.Value<int>() ?? 0;
+        bool criticalHit = ReadFlag(jo["critical_hit"]);
+        int criticalDamage = jo["critical_damage"]?.Value<int>() ?? 0;
+        bool blockedHit = ReadFlag(jo["blocked_hit"]);
+        int blockedDamage = jo["blocked_damage"]?.Value<int>() ?? 0;
+        bool overtimeHit = ReadFlag(jo["overtime_hit"]);
+        bool finalHit = ReadFlag(jo["final_hit"]);
 
         currentHealth = Mathf.Max(0f, currentHealth);
+        damage = Mathf.Max(0, damage);
+        criticalDamage = Mathf.Max(0, criticalDamage);
+        blockedDamage = Mathf.Max(0, blockedDamage);
+
+        // Ein HIT ist ein eindeutiges Signal, dass der Kampf läuft. So kann ein
+        // verspäteter STATE-Event die Healthbar nicht durch PREPARE-Logik resetten.
+        if (_phase == ArenaPhase.Prepare)
+        {
+            _phase = ArenaPhase.Fight;
+            HideArenaResult();
+        }
+
         bool isEnemy = target == "ENEMY";
 
         if (isEnemy)
         {
-            if (maxHealth > 0f) _enemyMaxHealth = maxHealth;
-            if (_enemyMaxHealth <= 0f) _enemyMaxHealth = currentHealth;
+            if (maxHealth > 0f)
+                _enemyMaxHealth = maxHealth;
 
-            _enemyCurrentHealth = Mathf.Min(currentHealth, _enemyMaxHealth);
+            if (_enemyMaxHealth <= 0f)
+                _enemyMaxHealth = Mathf.Max(1f, currentHealth);
 
-            if (_enemyHitSequenceCo != null) StopCoroutine(_enemyHitSequenceCo);
-            _enemyHitSequenceCo = StartCoroutine(PlayHitSequence(isEnemy: true, critical: critical, blocked: blocked));
+            _enemyCurrentHealth = Mathf.Clamp(currentHealth, 0f, _enemyMaxHealth);
+
+            if (enemyHealthText)
+                enemyHealthText.text = $"Health: {_enemyCurrentHealth:F0}";
+
+            StartEnemyHealthAnimation();
+            StartHitFeedback(
+                isEnemy: true,
+                damage: damage,
+                criticalHit: criticalHit,
+                criticalDamage: criticalDamage,
+                blockedHit: blockedHit,
+                blockedDamage: blockedDamage,
+                overtimeHit: overtimeHit,
+                finalHit: finalHit);
         }
         else
         {
-            if (maxHealth > 0f) _avatarMaxHealth = maxHealth;
-            if (_avatarMaxHealth <= 0f) _avatarMaxHealth = currentHealth;
+            if (maxHealth > 0f)
+                _avatarMaxHealth = maxHealth;
 
-            _avatarCurrentHealth = Mathf.Min(currentHealth, _avatarMaxHealth);
+            if (_avatarMaxHealth <= 0f)
+                _avatarMaxHealth = Mathf.Max(1f, currentHealth);
 
-            if (_avatarHitSequenceCo != null) StopCoroutine(_avatarHitSequenceCo);
-            _avatarHitSequenceCo = StartCoroutine(PlayHitSequence(isEnemy: false, critical: critical, blocked: blocked));
+            _avatarCurrentHealth = Mathf.Clamp(currentHealth, 0f, _avatarMaxHealth);
+
+            if (healthText)
+                healthText.text = $"Health: {_avatarCurrentHealth:F0}";
+
+            StartAvatarHealthAnimation();
+            StartHitFeedback(
+                isEnemy: false,
+                damage: damage,
+                criticalHit: criticalHit,
+                criticalDamage: criticalDamage,
+                blockedHit: blockedHit,
+                blockedDamage: blockedDamage,
+                overtimeHit: overtimeHit,
+                finalHit: finalHit);
         }
+
+        Debug.Log(
+            $"[Arena] HIT target={target} damage={damage} current={currentHealth} max={maxHealth} " +
+            $"critical={criticalHit}/{criticalDamage} blocked={blockedHit}/{blockedDamage} " +
+            $"overtime={overtimeHit} final={finalHit}");
+    }
+
+    private static bool ReadFlag(JToken token)
+    {
+        if (token == null || token.Type == JTokenType.Null)
+            return false;
+
+        if (token.Type == JTokenType.Boolean)
+            return token.Value<bool>();
+
+        if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
+            return Mathf.Abs(token.Value<float>()) > Mathf.Epsilon;
+
+        string value = token.ToString().Trim();
+        return value == "1" ||
+               value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+               value.Equals("yes", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void StartAvatarHealthAnimation()
+    {
+        if (!avatarHealthBar)
+            return;
+
+        if (_avatarHealthCoroutine != null)
+            StopCoroutine(_avatarHealthCoroutine);
+
+        _avatarHealthCoroutine = StartCoroutine(AnimateAvatarHealthBar());
+    }
+
+    private void StartEnemyHealthAnimation()
+    {
+        if (!enemyHealthBar)
+            return;
+
+        if (_enemyHealthCoroutine != null)
+            StopCoroutine(_enemyHealthCoroutine);
+
+        _enemyHealthCoroutine = StartCoroutine(AnimateEnemyHealthBar());
+    }
+
+    private IEnumerator AnimateAvatarHealthBar()
+    {
+        yield return AnimateHealthBar(
+            avatarHealthBar,
+            _avatarCurrentHealth,
+            _avatarMaxHealth);
+
+        _avatarHealthCoroutine = null;
+    }
+
+    private IEnumerator AnimateEnemyHealthBar()
+    {
+        yield return AnimateHealthBar(
+            enemyHealthBar,
+            _enemyCurrentHealth,
+            _enemyMaxHealth);
+
+        _enemyHealthCoroutine = null;
     }
 
     private IEnumerator AnimateHealthBar(Image bar, float current, float max)
     {
-        if (!bar) yield break;
+        if (!bar)
+            yield break;
 
-        float targetFill = (max <= 0f) ? 0f : Mathf.Clamp01(current / max);
+        float targetFill = max <= 0f
+            ? 0f
+            : Mathf.Clamp01(current / max);
+
         float initialFill = bar.fillAmount;
         float elapsedTime = 0f;
-        float duration = 0.25f;
+        const float duration = 0.25f;
 
         while (elapsedTime < duration)
         {
@@ -581,46 +872,98 @@ public class ArenaController : MonoBehaviour, IObserver
         bar.fillAmount = targetFill;
     }
 
-    private IEnumerator PlayHitSequence(bool isEnemy, float critical, float blocked)
+    private void StartHitFeedback(
+        bool isEnemy,
+        int damage,
+        bool criticalHit,
+        int criticalDamage,
+        bool blockedHit,
+        int blockedDamage,
+        bool overtimeHit,
+        bool finalHit)
     {
-        if (critical > 0f)
-        {
-            float critDuration = PlayCriticalHitEffect(critical, isEnemy);
-            if (critDuration > 0f)
-                yield return new WaitForSeconds(critDuration);
-        }
-
-        if (blocked > 0f)
-        {
-            float blockDuration = PlayBlockedHitEffect(blocked, isEnemy);
-            if (blockDuration > 0f)
-                yield return new WaitForSeconds(blockDuration);
-        }
-
         if (isEnemy)
         {
-            if (enemyHealthBar)
-            {
-                if (_enemyHealthCoroutine != null) StopCoroutine(_enemyHealthCoroutine);
-                _enemyHealthCoroutine = StartCoroutine(
-                    AnimateHealthBar(enemyHealthBar, _enemyCurrentHealth, _enemyMaxHealth));
-            }
+            if (_enemyHitSequenceCo != null)
+                StopCoroutine(_enemyHitSequenceCo);
+
+            _enemyHitSequenceCo = StartCoroutine(
+                PlayHitFeedback(
+                    isEnemy: true,
+                    damage: damage,
+                    criticalHit: criticalHit,
+                    criticalDamage: criticalDamage,
+                    blockedHit: blockedHit,
+                    blockedDamage: blockedDamage,
+                    overtimeHit: overtimeHit,
+                    finalHit: finalHit));
         }
         else
         {
-            if (avatarHealthBar)
-            {
-                if (_avatarHealthCoroutine != null) StopCoroutine(_avatarHealthCoroutine);
-                _avatarHealthCoroutine = StartCoroutine(
-                    AnimateHealthBar(avatarHealthBar, _avatarCurrentHealth, _avatarMaxHealth));
-            }
+            if (_avatarHitSequenceCo != null)
+                StopCoroutine(_avatarHitSequenceCo);
+
+            _avatarHitSequenceCo = StartCoroutine(
+                PlayHitFeedback(
+                    isEnemy: false,
+                    damage: damage,
+                    criticalHit: criticalHit,
+                    criticalDamage: criticalDamage,
+                    blockedHit: blockedHit,
+                    blockedDamage: blockedDamage,
+                    overtimeHit: overtimeHit,
+                    finalHit: finalHit));
+        }
+    }
+
+    private IEnumerator PlayHitFeedback(
+        bool isEnemy,
+        int damage,
+        bool criticalHit,
+        int criticalDamage,
+        bool blockedHit,
+        int blockedDamage,
+        bool overtimeHit,
+        bool finalHit)
+    {
+        float longestEffectDuration = 0f;
+
+        // Die Healthbar läuft bereits parallel. VFX dürfen das Health-Update nie blockieren.
+        if (criticalHit)
+        {
+            float duration = PlayCriticalHitEffect(criticalDamage, isEnemy);
+            longestEffectDuration = Mathf.Max(longestEffectDuration, duration);
         }
 
-        RefreshUI();
+        if (blockedHit)
+        {
+            float duration = PlayBlockedHitEffect(blockedDamage, isEnemy);
+            longestEffectDuration = Mathf.Max(longestEffectDuration, duration);
+        }
+
+        if (overtimeHit)
+        {
+            Debug.Log($"[Arena] Overtime attack against {(isEnemy ? "enemy" : "avatar")}: -{damage}");
+        }
+
+        if (finalHit)
+        {
+            Debug.Log($"[Arena] Final hit against {(isEnemy ? "enemy" : "avatar")}: -{damage}");
+        }
+
+        if (longestEffectDuration > 0f)
+            yield return new WaitForSeconds(longestEffectDuration);
+        else
+            yield return null;
+
+        if (isEnemy)
+            _enemyHitSequenceCo = null;
+        else
+            _avatarHitSequenceCo = null;
     }
 
     // -------- VFX + Text --------
-    private float PlayCriticalHitEffect(float impact, bool isEnemy)
+    private float PlayCriticalHitEffect(float bonusDamage, bool isEnemy)
     {
         float duration = 0.3f;
 
@@ -640,11 +983,11 @@ public class ArenaController : MonoBehaviour, IObserver
             Destroy(instance.gameObject, destroyTime);
         }
 
-        ShowCriticalHitPopup(isEnemy, impact);
+        ShowCriticalHitPopup(isEnemy, bonusDamage);
         return duration;
     }
 
-    private float PlayBlockedHitEffect(float impact, bool isEnemy)
+    private float PlayBlockedHitEffect(float blockedDamage, bool isEnemy)
     {
         float duration = 0.25f;
 
@@ -664,7 +1007,7 @@ public class ArenaController : MonoBehaviour, IObserver
             Destroy(instance.gameObject, destroyTime);
         }
 
-        ShowBlockedHitPopup(isEnemy, impact);
+        ShowBlockedHitPopup(isEnemy, blockedDamage);
         return duration;
     }
 
@@ -697,10 +1040,11 @@ public class ArenaController : MonoBehaviour, IObserver
         return GetViewportWorldPos(0.75f, 0.18f, 5f);
     }
 
-    private void ShowCriticalHitPopup(bool isEnemy, float impact)
+    private void ShowCriticalHitPopup(bool isEnemy, float bonusDamage)
     {
-        float factor = 1f + impact;
-        string text = $"CRITICAL x{factor:0.0}";
+        string text = bonusDamage > 0f
+            ? $"CRITICAL +{bonusDamage:0}"
+            : "CRITICAL";
 
         if (isEnemy)
         {
@@ -716,12 +1060,11 @@ public class ArenaController : MonoBehaviour, IObserver
         }
     }
 
-    private void ShowBlockedHitPopup(bool isEnemy, float impact)
+    private void ShowBlockedHitPopup(bool isEnemy, float blockedDamage)
     {
-        string text;
-        if (impact > 0.75f)      text = "FULL BLOCK";
-        else if (impact > 0.4f)  text = "GOOD BLOCK";
-        else                     text = "BLOCKED";
+        string text = blockedDamage > 0f
+            ? $"BLOCKED {blockedDamage:0}"
+            : "BLOCKED";
 
         if (isEnemy)
         {
@@ -806,7 +1149,7 @@ public class ArenaController : MonoBehaviour, IObserver
 
     public void NextAvatar()
     {
-        if (_phase != ArenaPhase.Prepare) return;
+        if (!CanChangeSelection()) return;
         var pav = PurchasedAvatars();
         if (pav.Count == 0) return;
         _avatarIndex = (_avatarIndex + 1) % pav.Count;
@@ -815,7 +1158,7 @@ public class ArenaController : MonoBehaviour, IObserver
 
     public void PrevAvatar()
     {
-        if (_phase != ArenaPhase.Prepare) return;
+        if (!CanChangeSelection()) return;
         var pav = PurchasedAvatars();
         if (pav.Count == 0) return;
         _avatarIndex = (_avatarIndex - 1 + pav.Count) % pav.Count;
@@ -824,7 +1167,7 @@ public class ArenaController : MonoBehaviour, IObserver
 
     public void NextWeapon()
     {
-        if (_phase != ArenaPhase.Prepare) return;
+        if (!CanChangeSelection()) return;
         var pwe = PurchasedWeapons();
         if (pwe.Count == 0) return;
         _weaponIndex = (_weaponIndex + 1) % pwe.Count;
@@ -833,7 +1176,7 @@ public class ArenaController : MonoBehaviour, IObserver
 
     public void PrevWeapon()
     {
-        if (_phase != ArenaPhase.Prepare) return;
+        if (!CanChangeSelection()) return;
         var pwe = PurchasedWeapons();
         if (pwe.Count == 0) return;
         _weaponIndex = (_weaponIndex - 1 + pwe.Count) % pwe.Count;
@@ -842,7 +1185,7 @@ public class ArenaController : MonoBehaviour, IObserver
 
     public void NextEnemy()
     {
-        if (_phase != ArenaPhase.Prepare) return;
+        if (!CanChangeSelection()) return;
         var pen = AllEnemies();
         if (pen.Count == 0) return;
         _enemyIndex = (_enemyIndex + 1) % pen.Count;
@@ -851,11 +1194,16 @@ public class ArenaController : MonoBehaviour, IObserver
 
     public void PrevEnemy()
     {
-        if (_phase != ArenaPhase.Prepare) return;
+        if (!CanChangeSelection()) return;
         var pen = AllEnemies();
         if (pen.Count == 0) return;
         _enemyIndex = (_enemyIndex - 1 + pen.Count) % pen.Count;
         RefreshUI();
+    }
+
+    private bool CanChangeSelection()
+    {
+        return _phase == ArenaPhase.Prepare || _phase == ArenaPhase.Finished;
     }
 
     // -------- UI Refresh --------
@@ -917,23 +1265,29 @@ public class ArenaController : MonoBehaviour, IObserver
         if (strengthText)      strengthText.text      = $"Strength: {totalStrength}";
         if (defenceText)       defenceText.text       = $"Defence: {weaponDefence}";
         if (healthText)        healthText.text        = $"Health: {_avatarCurrentHealth:F0}";
-        if (enemyStrengthText) enemyStrengthText.text = $"Enemy STR: {enemyStrength}";
-        if (enemyDefenceText)  enemyDefenceText.text  = $"Enemy DEF: {enemyDefence}";
-        if (enemyHealthText)   enemyHealthText.text   = $"Enemy HP: {_enemyCurrentHealth:F0}";
+        if (enemyStrengthText) enemyStrengthText.text = $"Strength: {enemyStrength}";
+        if (enemyDefenceText)  enemyDefenceText.text  = $"Defence: {enemyDefence}";
+        if (enemyHealthText)   enemyHealthText.text   = $"Health: {_enemyCurrentHealth:F0}";
 
-        if (avatarHealthBar)
+        // Eine laufende Healthbar-Animation darf durch allgemeine UI-Refreshes
+        // nicht direkt auf ihren Zielwert gesetzt werden.
+        if (avatarHealthBar && _avatarHealthCoroutine == null)
         {
-            float fill = (_avatarMaxHealth <= 0f) ? 0f : Mathf.Clamp01(_avatarCurrentHealth / _avatarMaxHealth);
+            float fill = (_avatarMaxHealth <= 0f)
+                ? 0f
+                : Mathf.Clamp01(_avatarCurrentHealth / _avatarMaxHealth);
             avatarHealthBar.fillAmount = fill;
         }
 
-        if (enemyHealthBar)
+        if (enemyHealthBar && _enemyHealthCoroutine == null)
         {
-            float fill = (_enemyMaxHealth <= 0f) ? 0f : Mathf.Clamp01(_enemyCurrentHealth / _enemyMaxHealth);
+            float fill = (_enemyMaxHealth <= 0f)
+                ? 0f
+                : Mathf.Clamp01(_enemyCurrentHealth / _enemyMaxHealth);
             enemyHealthBar.fillAmount = fill;
         }
 
-        bool canChange = _phase == ArenaPhase.Prepare;
+        bool canChange = CanChangeSelection();
         if (avatarPrevButton) avatarPrevButton.interactable = canChange && pav.Count > 1;
         if (avatarNextButton) avatarNextButton.interactable = canChange && pav.Count > 1;
         if (weaponPrevButton) weaponPrevButton.interactable = canChange && pwe.Count > 1;

@@ -15,6 +15,8 @@ public class PageUsageTracker : MonoBehaviour
 
     [Header("UI-Kategorien (per Button toggelbar)")]
     [SerializeField] private GameObject[] uiSections; // z.B. HUD, Topbar, XP, Debug
+    [Header("Conditional Background")]
+    [SerializeField] private GameObject progressChallengeBackground;
 
     [Header("MQTT")]
     [SerializeField] private MsgHandler msgHandler;
@@ -40,6 +42,7 @@ public class PageUsageTracker : MonoBehaviour
     {
         InitPages();
         // initiale Page ermitteln & einmal senden
+        UpdateProgressChallengeBackground();
         UpdateCurrentPage(force: true);
     }
 
@@ -150,6 +153,8 @@ public class PageUsageTracker : MonoBehaviour
         bool newState = !go.activeSelf;
         go.SetActive(newState);
 
+        UpdateProgressChallengeBackground();
+
         SendUiToggleEvent(index, newState);
     }
 
@@ -176,5 +181,26 @@ public class PageUsageTracker : MonoBehaviour
         };
 
         msgHandler.NotifyObservers(TopicUI, payload);
+    }
+    private void UpdateProgressChallengeBackground()
+    {
+        if (progressChallengeBackground == null)
+            return;
+
+        bool progressbarActive =
+            uiSections != null &&
+            uiSections.Length > 1 &&
+            uiSections[1] != null &&
+            uiSections[1].activeSelf;
+
+        bool challengeActive =
+            uiSections != null &&
+            uiSections.Length > 2 &&
+            uiSections[2] != null &&
+            uiSections[2].activeSelf;
+
+        bool shouldShowBackground = progressbarActive || challengeActive;
+
+        progressChallengeBackground.SetActive(shouldShowBackground);
     }
 }

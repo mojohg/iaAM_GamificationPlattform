@@ -360,6 +360,7 @@ public class AvatarController : MonoBehaviour, IObserver
 
         var jo = new JObject {
             ["avatar"] = cur.name,
+            ["coins"] = cur.cost,
             ["mqtt"]   = true
         };
 

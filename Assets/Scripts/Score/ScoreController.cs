@@ -17,12 +17,12 @@ public class ScoreController : MonoBehaviour, IObserver
 
     [Header("Topic")]
     [SerializeField] private string group = "EVALUATION";
-    [SerializeField] private string category = "WORKSTEP"; // Final-Topic: .../EVALUATION/WORKSTEP
+    [SerializeField] private string category = "WORKSTEP";
+    [SerializeField] private string detail = "RESULT/DATA";
 
     private MsgHandler msgHandler;
     private string _topic;
 
-    // State
     private float interpretationTime = 0f;
     private float processingTime = 0f;
     private float errorCorrectionTime = 0f;
@@ -36,7 +36,7 @@ public class ScoreController : MonoBehaviour, IObserver
     void Start()
     {
         msgHandler = FindObjectOfType<MsgHandler>();
-        _topic = TopicNamespace.TopicFor(group, category);
+        _topic = TopicNamespace.TopicFor(group, category, detail);
         if (msgHandler != null) msgHandler.RegisterObserver(_topic, this);
     }
 
@@ -52,10 +52,10 @@ public class ScoreController : MonoBehaviour, IObserver
 
         if (!TryParseWorkstep(s, out var interp, out var proc, out var corr, out var errs, out var isDone, out var list))
         {
-            Debug.LogWarning("[ScoreController] Unrecognized payload for WORKSTEP.");
+            Debug.LogWarning("[ScoreController] Unrecognized payload for WORKSTEP RESULT DATA.");
             return;
         }
-
+        Debug.Log($"[ScoreController] Received data - Interpretation: {interp}s, Processing: {proc}s, Correction: {corr}s, Errors: {errs}, Completed: {isDone}, Issues: {list.Count}");
         interpretationTime = interp;
         processingTime = proc;
         errorCorrectionTime = corr;
@@ -68,57 +68,43 @@ public class ScoreController : MonoBehaviour, IObserver
 
     bool TryParseWorkstep(string json, out float interp, out float proc, out float corr, out int errs, out bool done, out List<string> list)
     {
-        interp = proc = corr = 0f; errs = 0; done = false; list = null;
+        interp = proc = corr = 0f;
+        errs = 0;
+        done = false;
+        list = new List<string>();
+
         try
         {
             var tok = JToken.Parse(json);
 
-            // Neuer Stil: { "data": { ... } }
-            if (tok["data"] is JObject d)
-            {
-                interp = (float?)d["interpretation_time"] ?? 0f;
-                proc   = (float?)d["processing_time"] ?? 0f;
-                corr   = (float?)d["error_correction_time"] ?? 0f;
-                errs   = (int?)d["error_count"] ?? 0;
-                done   = (bool?)d["completed"] ?? false;
-                if (d["issues"] is JArray arr1) list = arr1.ToObject<List<string>>();
-                return true;
-            }
+            if (tok["data"] is not JObject d)
+                return false;
 
-            // Alter Stil (deine alte Quelle): JArray([{key, value}, ...])
-            if (tok is JArray arr)
+            // echte Backend-Feldnamen
+            interp = ((float?)d["interpretation_time_ms"] ?? 0f) / 1000f;
+            proc   = ((float?)d["operation_time_ms"] ?? 0f) / 1000f;
+            corr   = ((float?)d["correction_time_ms"] ?? 0f) / 1000f;
+            done   = (bool?)d["completed"] ?? false;
+
+            errs = (int?)d["evaluation_result"]?["summary"]?["error_count"] ?? 0;
+
+            if (d["evaluation_result"]?["errors"] is JArray errorArray)
             {
-                foreach (var e in arr)
+                foreach (var err in errorArray)
                 {
-                    var key = (string)e["key"];
-                    var val = e["value"];
-                    switch (key)
-                    {
-                        case "interpretation_time": interp = val?.ToObject<float>() ?? 0f; break;
-                        case "processing_time":     proc   = val?.ToObject<float>() ?? 0f; break;
-                        case "error_correction_time": corr = val?.ToObject<float>() ?? 0f; break;
-                        case "error_count":         errs   = val?.ToObject<int>() ?? 0;     break;
-                        case "completed":           done   = val?.ToObject<bool>() ?? false; break;
-                        case "issues": if (val is JArray arrIssues) list = arrIssues.ToObject<List<string>>(); break;
-                    }
+                    var msg = (string)err["message"];
+                    if (!string.IsNullOrWhiteSpace(msg))
+                        list.Add(msg);
                 }
-                return true;
             }
 
-            // Fallback: Flat Objekt
-            if (tok is JObject o)
-            {
-                interp = (float?)o["interpretation_time"] ?? 0f;
-                proc   = (float?)o["processing_time"] ?? 0f;
-                corr   = (float?)o["error_correction_time"] ?? 0f;
-                errs   = (int?)o["error_count"] ?? 0;
-                done   = (bool?)o["completed"] ?? false;
-                if (o["issues"] is JArray arr2) list = arr2.ToObject<List<string>>();
-                return true;
-            }
+            return true;
         }
-        catch { /* ignore */ }
-        return false;
+        catch (System.Exception ex)
+        {
+            Debug.LogWarning($"[ScoreController] Parse error: {ex.Message}");
+            return false;
+        }
     }
 
     void UpdateUI()
@@ -156,14 +142,14 @@ public class ScoreController : MonoBehaviour, IObserver
             t += Time.deltaTime / duration;
             float e = Mathf.SmoothStep(0f, 1f, t);
             if (interpretationSegment) interpretationSegment.fillAmount = Mathf.Lerp(sInterp, interpFill, e);
-            if (processingSegment)     processingSegment.fillAmount     = Mathf.Lerp(sProc,   tgtProc,   e);
-            if (errorCorrectionSegment)errorCorrectionSegment.fillAmount= Mathf.Lerp(sCorr,   tgtCorr,   e);
+            if (processingSegment)     processingSegment.fillAmount     = Mathf.Lerp(sProc, tgtProc, e);
+            if (errorCorrectionSegment) errorCorrectionSegment.fillAmount = Mathf.Lerp(sCorr, tgtCorr, e);
             yield return null;
         }
 
         if (interpretationSegment) interpretationSegment.fillAmount = interpFill;
-        if (processingSegment)     processingSegment.fillAmount     = tgtProc;
-        if (errorCorrectionSegment)errorCorrectionSegment.fillAmount= tgtCorr;
+        if (processingSegment) processingSegment.fillAmount = tgtProc;
+        if (errorCorrectionSegment) errorCorrectionSegment.fillAmount = tgtCorr;
     }
 
     IEnumerator ScrollIssuesText()
@@ -184,7 +170,7 @@ public class ScoreController : MonoBehaviour, IObserver
 
         rt.sizeDelta = new Vector2(textWidth, rt.sizeDelta.y);
         Vector2 startPos = new Vector2(containerWidth, rt.anchoredPosition.y);
-        Vector2 endPos   = new Vector2(-textWidth, rt.anchoredPosition.y);
+        Vector2 endPos = new Vector2(-textWidth, rt.anchoredPosition.y);
         rt.anchoredPosition = startPos;
 
         while (true)

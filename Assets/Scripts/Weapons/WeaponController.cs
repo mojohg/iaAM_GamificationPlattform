@@ -354,6 +354,7 @@ public class WeaponController : MonoBehaviour, IObserver
 
         var jo = new JObject {
             ["weapon"] = cur.name,
+            ["coins"] = cur.cost,
             ["mqtt"]   = true
         };
 
