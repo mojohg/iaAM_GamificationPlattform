@@ -51,6 +51,8 @@ public class ChallengeBarController : MonoBehaviour, IObserver
     private Coroutine resultRoutine;
     private int currentDifficultyIndex = 0;
     private bool difficultyFrozen = false;
+    private bool resultHandledForCurrentChallenge;
+    private bool challengeStarted;
 
 
     private void Awake()
@@ -82,6 +84,11 @@ public class ChallengeBarController : MonoBehaviour, IObserver
         msgHandler?.RemoveObserver(TopicState, this);
         msgHandler?.RemoveObserver(TopicResult, this);
 
+
+    }
+
+    private void OnDestroy()
+    {
         if (difficultyButton)
             difficultyButton.onClick.RemoveListener(OnDifficultyClicked);
     }
@@ -116,12 +123,15 @@ public class ChallengeBarController : MonoBehaviour, IObserver
                 {
                     benchmarkSeconds = bench.Value;
                     FreezeDifficulty(true);
+                    challengeStarted = true;
+                    resultHandledForCurrentChallenge = false;
                     StartChallengeBar();
                 }
                 break;
 
             case "Reset":
                 FreezeDifficulty(false);
+                challengeStarted = false;
                 ResetBar();
                 break;
 
@@ -134,21 +144,41 @@ public class ChallengeBarController : MonoBehaviour, IObserver
 
     private void OnResultMessage(string json)
     {
-        var root = JToken.Parse(json);
-        var payload = root["data"] ?? root;
+        try
+        {
+            var root = JToken.Parse(json);
+            var payload = root["data"] ?? root;
+            string result = payload["result"]?.ToString()?.Trim().ToLowerInvariant();
+            if (result != "success" && result != "fail" && result != "ok" && result != "passed")
+                return;
 
-        string result = payload["result"]?.ToString()?.ToLowerInvariant();
-        string message = payload["message"]?.ToString();
+            // MWS DTO currently has no challenge/round ID. Do not show duplicate RESULTs
+            // until a new Start. Ignore orphan results on initial login/reconnect.
+            if (!challengeStarted || resultHandledForCurrentChallenge) return;
 
-        bool success = result == "success" || result == "ok" || result == "passed";
+            resultHandledForCurrentChallenge = true;
+            bool success = result == "success" || result == "ok" || result == "passed";
+            string explanation = payload["message"]?.ToString();
+            if (string.IsNullOrWhiteSpace(explanation))
+                explanation = success ? "Challenge erfolgreich" : "Challenge nicht bestanden";
 
-        if (string.IsNullOrEmpty(message))
-            message = success ? "Challenge completed!" : "Challenge failed!";
+            float benchmark = payload["benchmark"]?.Value<float>() ?? benchmarkSeconds;
+            string benchmarkLine = benchmark > 0f
+                ? $"Benchmark: {benchmark:0.#} s"
+                : "Benchmark: nicht vorhanden";
+            string workstep = payload["workstep_id"] != null
+                ? $"\nWorkstep: {payload["workstep_id"]}" : "";
+            // An authoritative measured actual time is not present in this MWS DTO.
+            string message = $"{explanation}\n{benchmarkLine}{workstep}";
 
-        if (resultRoutine != null) StopCoroutine(resultRoutine);
-        resultRoutine = StartCoroutine(ShowResult(success, message));
-
-        ResetBar();
+            if (resultRoutine != null) StopCoroutine(resultRoutine);
+            resultRoutine = StartCoroutine(ShowResult(success, message));
+            ResetBar();
+        }
+        catch (Exception exception)
+        {
+            Debug.LogWarning($"[ChallengeBar] Invalid challenge result: {exception.Message}");
+        }
     }
 
     // ---------------------------------------------------------
@@ -164,7 +194,8 @@ public class ChallengeBarController : MonoBehaviour, IObserver
 
     private IEnumerator AnimateProgressBar()
     {
-        progressBar.fillAmount = 0f;
+        if (progressBar) progressBar.fillAmount = 0f;
+        if (benchmarkSeconds <= 0f) yield break;
         isRunning = true;
 
         float t = 0f;
@@ -172,7 +203,7 @@ public class ChallengeBarController : MonoBehaviour, IObserver
         while (t < benchmarkSeconds)
         {
             t += Time.deltaTime;
-            progressBar.fillAmount = Mathf.Clamp01(t / benchmarkSeconds);
+            if (progressBar) progressBar.fillAmount = Mathf.Clamp01(t / benchmarkSeconds);
             yield return null;
         }
 
@@ -184,7 +215,8 @@ public class ChallengeBarController : MonoBehaviour, IObserver
         if (progressRoutine != null)
             StopCoroutine(progressRoutine);
 
-        progressBar.fillAmount = 0f;
+        isRunning = false;
+        if (progressBar) progressBar.fillAmount = 0f;
 
     }
 

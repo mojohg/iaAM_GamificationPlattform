@@ -147,7 +147,7 @@ namespace Rocworks.Mqtt
             string payload = message.GetString();
 
             if (MqttClient.DebugMessages)
-                
+                Debug.Log($"[MsgHandler] RX {topic}");
 
             NotifyObservers(topic, payload);
 

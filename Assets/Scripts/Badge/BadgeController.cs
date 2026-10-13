@@ -59,22 +59,27 @@ public class BadgeController : MonoBehaviour, IObserver
         _topicChallenge = TopicNamespace.TopicFor(challengeGroup, challengeCategory);
 
         msgHandler.RegisterObserver(_topicBadges,    this);
-        msgHandler.RegisterObserver(_topicChallenge, this);
+        TopicNamespace.OnRootChanged += HandleRootChanged;
+        // Challenge result overlays belong to ChallengeBarController.
+        // Badge unlock HUD uses the explicit server event independently.
 
-        Debug.Log($"[BadgeController] Registered for topics: {_topicBadges}, {_topicChallenge}");
+        Debug.Log($"[BadgeController] Registered for badge snapshot topic: {_topicBadges}");
     }
 
     void OnDisable()
     {
+        TopicNamespace.OnRootChanged -= HandleRootChanged;
         if (msgHandler != null)
         {
             if (!string.IsNullOrEmpty(_topicBadges))
                 msgHandler.RemoveObserver(_topicBadges, this);
 
-            if (!string.IsNullOrEmpty(_topicChallenge))
-                msgHandler.RemoveObserver(_topicChallenge, this);
+
         }
     }
+
+    private void HandleRootChanged(string oldRoot, string newRoot) =>
+        _topicBadges = TopicNamespace.TopicFor(badgesGroup, badgesCategory);
 
     // ---- IObserver ----
     public void OnNotify(string eventType, object data)
@@ -101,17 +106,7 @@ public class BadgeController : MonoBehaviour, IObserver
                 UpdateBadges(badges);
             }
         }
-        else if (eventType == _topicChallenge)
-        {
-            // Erwartet:
-            // {
-            //   "result": "success" | "fail" | ...,
-            //   "level": 1,
-            //   "difficulty": "Very Easy" | "Easy" | ... | "Insane"
-            // }
-            JObject challengeResult = JObject.Parse(s);
-            HandleChallengeResult(challengeResult);
-        }
+
     }
 
     // ---- Badges aktualisieren ----

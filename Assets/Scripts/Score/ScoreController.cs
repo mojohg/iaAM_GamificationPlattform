@@ -1,182 +1,139 @@
 using System.Collections;
 using System.Collections.Generic;
+using Newtonsoft.Json.Linq;
+using Rocworks.Mqtt;
 using UnityEngine;
 using UnityEngine.UI;
-using Rocworks.Mqtt;
-using Newtonsoft.Json.Linq;
 
+/// <summary>Workstep display of server evidence, no scientific calculations.</summary>
 public class ScoreController : MonoBehaviour, IObserver
 {
-    [Header("UI")]
+    [Header("Four-time pie (Radial360 images, cumulative layers)")]
     [SerializeField] private Image interpretationSegment;
     [SerializeField] private Image processingSegment;
     [SerializeField] private Image errorCorrectionSegment;
+    [SerializeField] private Image unclassifiedSegment;
+    [SerializeField] private Text measurementStatusText;
+
+    [Header("Workstep")]
     [SerializeField] private Image completionBar;
     [SerializeField] private Text errorCountText;
     [SerializeField] private Text issuesText;
 
-    [Header("Topic")]
+    [Header("MQTT")]
     [SerializeField] private string group = "EVALUATION";
     [SerializeField] private string category = "WORKSTEP";
     [SerializeField] private string detail = "RESULT/DATA";
 
-    private MsgHandler msgHandler;
+    private MsgHandler _messages;
     private string _topic;
+    private Coroutine _issueScroll;
 
-    private float interpretationTime = 0f;
-    private float processingTime = 0f;
-    private float errorCorrectionTime = 0f;
-    private int errorCount = 0;
-    private bool completed = false;
-    private List<string> issues = new List<string>();
-
-    private Coroutine animationCoroutine;
-    private Coroutine scrollingTextCoroutine;
-
-    void Start()
+    private void Start()
     {
-        msgHandler = FindObjectOfType<MsgHandler>();
+        _messages = FindObjectOfType<MsgHandler>();
         _topic = TopicNamespace.TopicFor(group, category, detail);
-        if (msgHandler != null) msgHandler.RegisterObserver(_topic, this);
+        _messages?.RegisterObserver(_topic, this);
+        TopicNamespace.OnRootChanged += HandleRootChanged;
+        ClearTimeDiagram("Keine wissenschaftliche Zeitbilanz");
     }
 
-    void OnDestroy()
+    private void OnDestroy()
     {
-        if (msgHandler != null) msgHandler.RemoveObserver(_topic, this);
+        TopicNamespace.OnRootChanged -= HandleRootChanged;
+        _messages?.RemoveObserver(_topic, this);
     }
+
+    private void HandleRootChanged(string oldRoot, string newRoot) =>
+        _topic = TopicNamespace.TopicFor(group, category, detail);
 
     public void OnNotify(string eventType, object data)
     {
-        if (eventType != _topic) return;
-        if (data is not string s || string.IsNullOrWhiteSpace(s)) return;
+        if (eventType != _topic || data is not string json) return;
+        JObject root;
+        try { root = JObject.Parse(json); }
+        catch (System.Exception) { return; }
+        var payload = root["data"] as JObject;
+        if (payload == null) return;
 
-        if (!TryParseWorkstep(s, out var interp, out var proc, out var corr, out var errs, out var isDone, out var list))
+        if (EoeeTimeProjection.TryParseWorkstep(json, out var projection))
+            ShowTimeDiagram(projection);
+        else
+            ClearTimeDiagram("Zeitbilanz unvollständig / kein Vier-Zeiten-Nachweis");
+
+        if (completionBar)
+            completionBar.color = payload["completed"]?.Value<bool>() == true
+                ? Color.green : Color.gray;
+
+        // The workstep MQTT contract does not guarantee full error coverage.
+        // Only authoritative scientific nerr is exact; legacy summary is a lower bound.
+        var layer = payload["eoee_layer3"];
+        var nerr = layer?["nerr"];
+        var detected = payload["evaluation_result"]?["summary"]?["error_count"];
+        if (errorCountText)
         {
-            Debug.LogWarning("[ScoreController] Unrecognized payload for WORKSTEP RESULT DATA.");
+            if (nerr != null && nerr.Type != JTokenType.Null)
+                errorCountText.text = $"Fehler: {nerr}";
+            else if (detected != null && detected.Type != JTokenType.Null && detected.Value<int>() > 0)
+                errorCountText.text = $"Mindestens {detected} Fehler erkannt";
+            else
+                errorCountText.text = "Fehler: nicht vollständig erfasst";
+        }
+
+        var issues = new List<string>();
+        if (payload["evaluation_result"]?["errors"] is JArray errors)
+        {
+            foreach (var item in errors)
+            {
+                string message = item["message"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(message)) issues.Add(message);
+            }
+        }
+        if (_issueScroll != null) StopCoroutine(_issueScroll);
+        if (issuesText) _issueScroll = StartCoroutine(ScrollIssues(issues));
+    }
+
+    private void ShowTimeDiagram(EoeeTimeProjection t)
+    {
+        if (!unclassifiedSegment)
+        {
+            ClearTimeDiagram("Vierte Zeitfläche im Inspector nicht zugewiesen");
             return;
         }
-        Debug.Log($"[ScoreController] Received data - Interpretation: {interp}s, Processing: {proc}s, Correction: {corr}s, Errors: {errs}, Completed: {isDone}, Issues: {list.Count}");
-        interpretationTime = interp;
-        processingTime = proc;
-        errorCorrectionTime = corr;
-        errorCount = errs;
-        completed = isDone;
-        issues = list ?? new List<string>();
-
-        UpdateUI();
+        if (interpretationSegment) interpretationSegment.fillAmount = t.VisualInterpretationFill;
+        if (processingSegment) processingSegment.fillAmount = t.VisualExecutionFill;
+        if (errorCorrectionSegment) errorCorrectionSegment.fillAmount = t.VisualCorrectionFill;
+        unclassifiedSegment.fillAmount = t.UnclassifiedCumulativeFill;
+        if (measurementStatusText)
+            measurementStatusText.text = $"{t.MeasurementStatus} · unbekannt: {t.UnclassifiedMs / 1000f:0.##} s";
     }
 
-    bool TryParseWorkstep(string json, out float interp, out float proc, out float corr, out int errs, out bool done, out List<string> list)
+    private void ClearTimeDiagram(string reason)
     {
-        interp = proc = corr = 0f;
-        errs = 0;
-        done = false;
-        list = new List<string>();
-
-        try
-        {
-            var tok = JToken.Parse(json);
-
-            if (tok["data"] is not JObject d)
-                return false;
-
-            // echte Backend-Feldnamen
-            interp = ((float?)d["interpretation_time_ms"] ?? 0f) / 1000f;
-            proc   = ((float?)d["operation_time_ms"] ?? 0f) / 1000f;
-            corr   = ((float?)d["correction_time_ms"] ?? 0f) / 1000f;
-            done   = (bool?)d["completed"] ?? false;
-
-            errs = (int?)d["evaluation_result"]?["summary"]?["error_count"] ?? 0;
-
-            if (d["evaluation_result"]?["errors"] is JArray errorArray)
-            {
-                foreach (var err in errorArray)
-                {
-                    var msg = (string)err["message"];
-                    if (!string.IsNullOrWhiteSpace(msg))
-                        list.Add(msg);
-                }
-            }
-
-            return true;
-        }
-        catch (System.Exception ex)
-        {
-            Debug.LogWarning($"[ScoreController] Parse error: {ex.Message}");
-            return false;
-        }
+        if (interpretationSegment) interpretationSegment.fillAmount = 0;
+        if (processingSegment) processingSegment.fillAmount = 0;
+        if (errorCorrectionSegment) errorCorrectionSegment.fillAmount = 0;
+        if (unclassifiedSegment) unclassifiedSegment.fillAmount = 0;
+        if (measurementStatusText) measurementStatusText.text = reason;
     }
 
-    void UpdateUI()
+    private IEnumerator ScrollIssues(List<string> issues)
     {
-        var totalTime = interpretationTime + processingTime + errorCorrectionTime;
-        if (totalTime > 0f)
-        {
-            var interpFill = interpretationTime / totalTime;
-            var procFill = processingTime / totalTime;
-            var corrFill = errorCorrectionTime / totalTime;
-
-            if (animationCoroutine != null) StopCoroutine(animationCoroutine);
-            animationCoroutine = StartCoroutine(AnimatePieChart(interpFill, procFill, corrFill));
-        }
-
-        if (completionBar) completionBar.color = completed ? Color.green : Color.red;
-        if (errorCountText) errorCountText.text = $"Errors: {errorCount}";
-
-        if (scrollingTextCoroutine != null) StopCoroutine(scrollingTextCoroutine);
-        if (issuesText) scrollingTextCoroutine = StartCoroutine(ScrollIssuesText());
-    }
-
-    IEnumerator AnimatePieChart(float interpFill, float procFill, float corrFill)
-    {
-        float duration = 1.0f, t = 0f;
-        float sInterp = interpretationSegment ? interpretationSegment.fillAmount : 0f;
-        float sProc   = processingSegment ? processingSegment.fillAmount : 0f;
-        float sCorr   = errorCorrectionSegment ? errorCorrectionSegment.fillAmount : 0f;
-
-        float tgtProc = interpFill + procFill;
-        float tgtCorr = tgtProc + corrFill;
-
-        while (t < 1f)
-        {
-            t += Time.deltaTime / duration;
-            float e = Mathf.SmoothStep(0f, 1f, t);
-            if (interpretationSegment) interpretationSegment.fillAmount = Mathf.Lerp(sInterp, interpFill, e);
-            if (processingSegment)     processingSegment.fillAmount     = Mathf.Lerp(sProc, tgtProc, e);
-            if (errorCorrectionSegment) errorCorrectionSegment.fillAmount = Mathf.Lerp(sCorr, tgtCorr, e);
-            yield return null;
-        }
-
-        if (interpretationSegment) interpretationSegment.fillAmount = interpFill;
-        if (processingSegment) processingSegment.fillAmount = tgtProc;
-        if (errorCorrectionSegment) errorCorrectionSegment.fillAmount = tgtCorr;
-    }
-
-    IEnumerator ScrollIssuesText()
-    {
-        if (issues == null || issues.Count == 0)
-        {
-            issuesText.text = "No issues.";
-            yield break;
-        }
-
-        string fullText = string.Join(" | ", issues);
-        issuesText.text = fullText;
-
-        RectTransform rt = issuesText.rectTransform;
-        float scrollSpeed = 100f;
-        float textWidth = issuesText.preferredWidth;
-        float containerWidth = rt.parent.GetComponent<RectTransform>().rect.width;
-
-        rt.sizeDelta = new Vector2(textWidth, rt.sizeDelta.y);
-        Vector2 startPos = new Vector2(containerWidth, rt.anchoredPosition.y);
-        Vector2 endPos = new Vector2(-textWidth, rt.anchoredPosition.y);
-        rt.anchoredPosition = startPos;
-
+        if (!issuesText) yield break;
+        issuesText.text = issues.Count > 0 ? string.Join(" | ", issues) : "Keine erfassten Abweichungen";
+        if (issues.Count == 0) yield break;
+        var rect = issuesText.rectTransform;
+        var parent = rect.parent as RectTransform;
+        if (!parent) yield break;
+        float width = issuesText.preferredWidth;
+        float start = parent.rect.width;
+        rect.sizeDelta = new Vector2(width, rect.sizeDelta.y);
+        rect.anchoredPosition = new Vector2(start, rect.anchoredPosition.y);
         while (true)
         {
-            rt.anchoredPosition += Vector2.left * scrollSpeed * Time.deltaTime;
-            if (rt.anchoredPosition.x <= endPos.x) rt.anchoredPosition = startPos;
+            rect.anchoredPosition += Vector2.left * 100f * Time.deltaTime;
+            if (rect.anchoredPosition.x < -width)
+                rect.anchoredPosition = new Vector2(start, rect.anchoredPosition.y);
             yield return null;
         }
     }

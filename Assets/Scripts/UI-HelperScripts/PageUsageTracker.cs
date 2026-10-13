@@ -29,6 +29,13 @@ public class PageUsageTracker : MonoBehaviour
     private int pageCount = 0;
     private int currentPageIndex = -1;
 
+    public string CurrentPageId => currentPageIndex >= 0 && pageIds != null &&
+        currentPageIndex < pageIds.Length ? pageIds[currentPageIndex] : string.Empty;
+
+    public bool IsCurrentPage(string pageId) =>
+        !string.IsNullOrWhiteSpace(pageId) &&
+        string.Equals(CurrentPageId, pageId, StringComparison.OrdinalIgnoreCase);
+
     private void Awake()
     {
         if (!scrollRect)

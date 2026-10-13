@@ -70,6 +70,14 @@ public class ArenaController : MonoBehaviour, IObserver
     [Tooltip("0 means the result stays visible until PREPARE/FIGHT resets it.")]
     [SerializeField] private float resultAutoHideSeconds = 0f;
 
+    [Header("Arena View Visibility")]
+    [Tooltip("Zuordnen: bestehender PageUsageTracker der Hauptnavigation.")]
+    [SerializeField] private PageUsageTracker pageUsageTracker;
+    [Tooltip("Exakte Page-ID der Arena im PageUsageTracker. Falls leer: nur CanvasGroup prüfen.")]
+    [SerializeField] private string arenaPageId = "";
+    [Tooltip("Optional: echte Arena-CanvasGroup (alpha=0 bedeutet unsichtbar).")]
+    [SerializeField] private CanvasGroup arenaCanvasGroup;
+
     [Header("Camera")]
     [SerializeField] private Camera mainCamera;
 
@@ -113,6 +121,14 @@ public class ArenaController : MonoBehaviour, IObserver
     private Coroutine _avatarHealthCoroutine;
     private Coroutine _enemyHealthCoroutine;
 
+    private readonly HashSet<string> _seenArenaHitIds = new HashSet<string>();
+    private readonly Queue<string> _seenArenaHitOrder = new Queue<string>();
+    private const int MaxArenaEventIds = 512;
+
+    private readonly List<GameObject> _activeHitEffects = new List<GameObject>();
+    private bool _wasArenaVisible;
+    private bool _warnedMissingViewSource;
+
     private Coroutine _avatarHitSequenceCo;
     private Coroutine _enemyHitSequenceCo;
 
@@ -127,6 +143,7 @@ public class ArenaController : MonoBehaviour, IObserver
     {
         if (!msgHandler) msgHandler = FindObjectOfType<MsgHandler>();
         if (!mainCamera) mainCamera = Camera.main;
+        if (!pageUsageTracker) pageUsageTracker = FindObjectOfType<PageUsageTracker>();
 
         WireButtons();
         LoadSpritesFromDisk();
@@ -148,6 +165,56 @@ public class ArenaController : MonoBehaviour, IObserver
     private void OnDestroy()
     {
         UnregisterObservers();
+        StopHiddenHitFeedback();
+    }
+
+    private void Update()
+    {
+        bool visible = IsArenaVisible();
+        if (_wasArenaVisible && !visible) StopHiddenHitFeedback();
+        _wasArenaVisible = visible;
+    }
+
+    private bool IsArenaVisible()
+    {
+        bool hasPage = pageUsageTracker != null;
+        bool hasCanvas = arenaCanvasGroup != null;
+        // A scrolling navigation needs an explicit page identity. A CanvasGroup
+        // alone cannot prove its offscreen page is currently visible.
+        if (hasPage && string.IsNullOrWhiteSpace(arenaPageId)) return false;
+        if (!hasPage && !hasCanvas)
+        {
+            if (!_warnedMissingViewSource)
+            {
+                Debug.LogWarning("[Arena] Configure PageUsageTracker/arenaPageId or arenaCanvasGroup. HIT VFX disabled until configured.");
+                _warnedMissingViewSource = true;
+            }
+            return false;
+        }
+
+        bool pageVisible = !hasPage || pageUsageTracker.IsCurrentPage(arenaPageId);
+        bool canvasVisible = !hasCanvas ||
+            (arenaCanvasGroup.gameObject.activeInHierarchy && arenaCanvasGroup.alpha > 0.01f);
+        return pageVisible && canvasVisible;
+    }
+
+    private void StopHiddenHitFeedback()
+    {
+        if (_avatarHitSequenceCo != null) StopCoroutine(_avatarHitSequenceCo);
+        if (_enemyHitSequenceCo != null) StopCoroutine(_enemyHitSequenceCo);
+        if (_avatarCritCo != null) StopCoroutine(_avatarCritCo);
+        if (_avatarBlockCo != null) StopCoroutine(_avatarBlockCo);
+        if (_enemyCritCo != null) StopCoroutine(_enemyCritCo);
+        if (_enemyBlockCo != null) StopCoroutine(_enemyBlockCo);
+        _avatarHitSequenceCo = _enemyHitSequenceCo = null;
+        _avatarCritCo = _avatarBlockCo = _enemyCritCo = _enemyBlockCo = null;
+        if (avatarCriticalPopup) avatarCriticalPopup.SetActive(false);
+        if (avatarBlockedPopup) avatarBlockedPopup.SetActive(false);
+        if (enemyCriticalPopup) enemyCriticalPopup.SetActive(false);
+        if (enemyBlockedPopup) enemyBlockedPopup.SetActive(false);
+        foreach (var effect in _activeHitEffects)
+            if (effect) Destroy(effect);
+        _activeHitEffects.Clear();
     }
 
     // -------- MQTT topics --------
@@ -491,6 +558,13 @@ public class ArenaController : MonoBehaviour, IObserver
             if (idx >= 0) _enemyIndex = idx;
         }
 
+        if (_phase == ArenaPhase.Prepare || changedToFight)
+        {
+            HideArenaResult();
+            StopHiddenHitFeedback();
+            ResetSelectedHealth();
+        }
+
         float avatarCurrent = jo["avatar_current_health"]?.Value<float>() ?? -1f;
         float avatarMax     = jo["avatar_max_health"]?.Value<float>()     ?? -1f;
         float enemyCurrent  = jo["enemy_current_health"]?.Value<float>()  ?? -1f;
@@ -501,21 +575,6 @@ public class ArenaController : MonoBehaviour, IObserver
 
         if (enemyMax > 0f) _enemyMaxHealth = enemyMax;
         if (enemyCurrent >= 0f) _enemyCurrentHealth = Mathf.Clamp(enemyCurrent, 0f, _enemyMaxHealth);
-
-        if (_phase == ArenaPhase.Prepare)
-        {
-            HideArenaResult();
-
-            var pav = PurchasedAvatars();
-            var curAv = pav.Count > 0 ? pav[Mathf.Clamp(_avatarIndex, 0, pav.Count - 1)] : null;
-            _avatarMaxHealth     = curAv?.health ?? 0f;
-            _avatarCurrentHealth = _avatarMaxHealth;
-
-            var pen = AllEnemies();
-            var curEn = pen.Count > 0 ? pen[Mathf.Clamp(_enemyIndex, 0, pen.Count - 1)] : null;
-            _enemyMaxHealth      = curEn?.health ?? 0f;
-            _enemyCurrentHealth  = _enemyMaxHealth;
-        }
 
         if (changedToFight)
         {
@@ -542,6 +601,23 @@ public class ArenaController : MonoBehaviour, IObserver
         }
     }
 
+    private static string FormatArenaOutcomeReason(string reason, string fallback)
+    {
+        switch (reason)
+        {
+            case "QUALITY_FAILED": return "Quality check failed. No victory.";
+            case "ERRORS_DETECTED": return "Assembly errors detected. No victory.";
+            case "BENCHMARK_EXCEEDED": return "Assembly time exceeded the benchmark.";
+            case "AVATAR_DEFEATED": return "Your avatar has no health remaining.";
+            case "INCOMPLETE_WORKSTEP_EVIDENCE": return "Not all worksteps have verified completion evidence.";
+            case "BENCHMARK_UNKNOWN": return "No verified benchmark available for this run.";
+            case "DURATION_UNKNOWN": return "No reliable total assembly duration was measured.";
+            case "ERROR_COVERAGE_UNKNOWN": return "Errors cannot be assessed with the available sensor data.";
+            case "QUALITY_UNKNOWN": return "Product quality was not verified.";
+            default: return fallback;
+        }
+    }
+
     private void ShowArenaResult(string result, JObject payload)
     {
         string normalized = string.IsNullOrEmpty(result)
@@ -559,8 +635,15 @@ public class ArenaController : MonoBehaviour, IObserver
                 break;
 
             case "LOSE":
-                title = "DEFEAT!";
-                message = "The enemy defeated you. Improve quality and try again!";
+                title = "CHALLENGE FAILED";
+                message = FormatArenaOutcomeReason(payload["result_reason"]?.ToString(),
+                    "Benchmark, quality or error-free completion was not achieved.");
+                break;
+
+            case "UNVERIFIED":
+                title = "RESULT NOT VERIFIED";
+                message = FormatArenaOutcomeReason(payload["result_reason"]?.ToString(),
+                    "Missing benchmark, quality, error coverage or workstep evidence. No reward granted.");
                 break;
 
             case "DRAW":
@@ -699,6 +782,15 @@ public class ArenaController : MonoBehaviour, IObserver
     private void HandleHitEvent(string json)
     {
         var jo = JObject.Parse(json);
+
+        string hitId = jo["event_id"]?.ToString();
+        if (!string.IsNullOrEmpty(hitId))
+        {
+            if (!_seenArenaHitIds.Add(hitId)) return;
+            _seenArenaHitOrder.Enqueue(hitId);
+            if (_seenArenaHitOrder.Count > MaxArenaEventIds)
+                _seenArenaHitIds.Remove(_seenArenaHitOrder.Dequeue());
+        }
 
         string target = jo["target"]?.ToString()?.Trim().ToUpperInvariant();
         if (target != "AVATAR" && target != "ENEMY")
@@ -882,6 +974,7 @@ public class ArenaController : MonoBehaviour, IObserver
         bool overtimeHit,
         bool finalHit)
     {
+        if (!IsArenaVisible()) return;
         if (isEnemy)
         {
             if (_enemyHitSequenceCo != null)
@@ -974,6 +1067,7 @@ public class ArenaController : MonoBehaviour, IObserver
             worldPos += mainCamera.transform.up * 0.1f;
 
             ParticleSystem instance = Instantiate(prefab, worldPos, Quaternion.identity);
+            _activeHitEffects.Add(instance.gameObject);
 
             var mainModule = instance.main;
             instance.Play(true);
@@ -998,6 +1092,7 @@ public class ArenaController : MonoBehaviour, IObserver
             worldPos += mainCamera.transform.up * 0.05f;
 
             ParticleSystem instance = Instantiate(prefab, worldPos, Quaternion.identity);
+            _activeHitEffects.Add(instance.gameObject);
 
             var mainModule = instance.main;
             instance.Play(true);
@@ -1153,7 +1248,7 @@ public class ArenaController : MonoBehaviour, IObserver
         var pav = PurchasedAvatars();
         if (pav.Count == 0) return;
         _avatarIndex = (_avatarIndex + 1) % pav.Count;
-        RefreshUI();
+        PrepareSelectedCombatants();
     }
 
     public void PrevAvatar()
@@ -1162,7 +1257,7 @@ public class ArenaController : MonoBehaviour, IObserver
         var pav = PurchasedAvatars();
         if (pav.Count == 0) return;
         _avatarIndex = (_avatarIndex - 1 + pav.Count) % pav.Count;
-        RefreshUI();
+        PrepareSelectedCombatants();
     }
 
     public void NextWeapon()
@@ -1171,7 +1266,7 @@ public class ArenaController : MonoBehaviour, IObserver
         var pwe = PurchasedWeapons();
         if (pwe.Count == 0) return;
         _weaponIndex = (_weaponIndex + 1) % pwe.Count;
-        RefreshUI();
+        PrepareSelectedCombatants();
     }
 
     public void PrevWeapon()
@@ -1180,7 +1275,7 @@ public class ArenaController : MonoBehaviour, IObserver
         var pwe = PurchasedWeapons();
         if (pwe.Count == 0) return;
         _weaponIndex = (_weaponIndex - 1 + pwe.Count) % pwe.Count;
-        RefreshUI();
+        PrepareSelectedCombatants();
     }
 
     public void NextEnemy()
@@ -1189,7 +1284,7 @@ public class ArenaController : MonoBehaviour, IObserver
         var pen = AllEnemies();
         if (pen.Count == 0) return;
         _enemyIndex = (_enemyIndex + 1) % pen.Count;
-        RefreshUI();
+        PrepareSelectedCombatants();
     }
 
     public void PrevEnemy()
@@ -1198,7 +1293,40 @@ public class ArenaController : MonoBehaviour, IObserver
         var pen = AllEnemies();
         if (pen.Count == 0) return;
         _enemyIndex = (_enemyIndex - 1 + pen.Count) % pen.Count;
+        PrepareSelectedCombatants();
+    }
+
+    // A user selection after a finished fight starts a fresh preview. General
+    // UI refreshes and page changes must keep the current combat health intact.
+    private void PrepareSelectedCombatants()
+    {
+        _phase = ArenaPhase.Prepare;
+        HideArenaResult();
+        StopHiddenHitFeedback();
+        ResetSelectedHealth();
         RefreshUI();
+    }
+
+    private void ResetSelectedHealth()
+    {
+        if (_avatarHealthCoroutine != null)
+            StopCoroutine(_avatarHealthCoroutine);
+        if (_enemyHealthCoroutine != null)
+            StopCoroutine(_enemyHealthCoroutine);
+        _avatarHealthCoroutine = null;
+        _enemyHealthCoroutine = null;
+
+        var avatars = PurchasedAvatars();
+        var enemies = AllEnemies();
+        var avatar = avatars.Count > 0
+            ? avatars[Mathf.Clamp(_avatarIndex, 0, avatars.Count - 1)] : null;
+        var enemy = enemies.Count > 0
+            ? enemies[Mathf.Clamp(_enemyIndex, 0, enemies.Count - 1)] : null;
+
+        _avatarMaxHealth = avatar?.health ?? 0f;
+        _avatarCurrentHealth = _avatarMaxHealth;
+        _enemyMaxHealth = enemy?.health ?? 0f;
+        _enemyCurrentHealth = _enemyMaxHealth;
     }
 
     private bool CanChangeSelection()
